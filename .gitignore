@@ -11,8 +11,10 @@ venv/
 .venv/
 env/
 
-# 报告（自动生成，不提交）
+# 报告（自动生成，不提交根目录，但归档和复盘需要提交）
 reports/
+!reports/daily/
+!reports/weekly/
 
 # 环境变量（可能包含敏感信息）
 .env
