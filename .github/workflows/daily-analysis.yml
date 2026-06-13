@@ -43,6 +43,10 @@ jobs:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
         run: python analyzer.py
 
+      - name: 📁 归档日报到仓库
+        if: always()
+        run: bash scripts/archive_report.sh
+
       - name: 💾 保存报告
         if: always()
         uses: actions/upload-artifact@v4
