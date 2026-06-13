@@ -1,0 +1,59 @@
+# ============================================
+# 周末复盘总结 - GitHub Actions 定时任务
+# 每周六北京时间 10:00（UTC 02:00）运行
+# 读取本周日报 → DeepSeek 生成周评 → 推送微信
+# ============================================
+
+name: Weekly Review
+
+on:
+  schedule:
+    # UTC 02:00 = 北京时间 10:00，仅周六
+    - cron: '0 2 * * 6'
+
+  # 支持手动触发
+  workflow_dispatch:
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 🤖 生成周复盘总结
+        id: weekly
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        run: python scripts/weekly_review.py
+
+      - name: 📁 提交周报到仓库
+        if: always()
+        run: |
+          DATE=$(date +%F)
+          git config user.name "stock-analyzer[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/weekly/
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "⏭️ 无新内容可提交"
+          else
+            git commit -m "📆 周复盘 ${DATE}"
+            git push
+            echo "✅ 周报已推送到仓库"
+          fi
+
+      - name: 💾 保存周报
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-review-${{ github.run_number }}
+          path: reports/weekly/
+          retention-days: 90
