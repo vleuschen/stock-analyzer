@@ -1,35 +1,28 @@
 """
 方糖 ServerChan 微信推送模块
 API: https://sct.ftqq.com/
-零外部依赖，使用 Python 内置 urllib
+零外部依赖，使用 Python 内置 http.client
 """
 
+import os
 import time
 import json
-import urllib.request
+import http.client
+import ssl
 import urllib.parse
 
-
-SERVERCHAN_URL = "https://sctapi.ftqq.com/{sendkey}.send"
+# 强制清除代理
+for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+            "ALL_PROXY", "all_proxy"]:
+    os.environ.pop(key, None)
 
 
 def push_serverchan(sendkey: str, title: str, desp: str, max_retries: int = 3) -> dict:
     """
     推送消息到微信（通过方糖 ServerChan）
-
-    Args:
-        sendkey: 方糖 SendKey
-        title: 消息标题（最长100字）
-        desp: 消息正文（Markdown 格式）
-        max_retries: 最大重试次数
-
-    Returns:
-        API 响应 JSON
     """
     if not sendkey:
         return {"code": -1, "message": "未配置 SERVERCHAN_SENDKEY"}
-
-    url = SERVERCHAN_URL.format(sendkey=sendkey)
 
     # 截断标题（方糖限制100字）
     if len(title) > 100:
@@ -40,19 +33,22 @@ def push_serverchan(sendkey: str, title: str, desp: str, max_retries: int = 3) -
         "desp": desp,
     }).encode("utf-8")
 
+    path = f"/{sendkey}.send"
+
     for attempt in range(max_retries):
         try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            conn = http.client.HTTPSConnection("sctapi.ftqq.com", 443, timeout=30, context=ctx)
+            conn.request(
+                "POST", path, body=payload,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-                method="POST",
             )
-            # 绕过系统代理
-            proxy_handler = urllib.request.ProxyHandler({})
-            opener = urllib.request.build_opener(proxy_handler)
-            resp = opener.open(req, timeout=30)
+            resp = conn.getresponse()
             result = json.loads(resp.read().decode("utf-8"))
+            conn.close()
 
             if result.get("code") == 0:
                 print(f"✅ 推送成功: {title}")
@@ -61,12 +57,8 @@ def push_serverchan(sendkey: str, title: str, desp: str, max_retries: int = 3) -
                 print(f"⚠️ 推送返回异常 (attempt {attempt + 1}/{max_retries}): {result}")
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
-        except urllib.error.URLError as e:
-            print(f"⚠️ 推送失败 (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
         except Exception as e:
-            print(f"❌ 推送异常: {e}")
+            print(f"❌ 推送失败 (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
 
