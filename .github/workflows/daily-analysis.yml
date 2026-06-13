@@ -45,7 +45,11 @@ jobs:
 
       - name: 📁 归档日报到仓库
         if: always()
-        run: bash scripts/archive_report.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+          bash scripts/archive_report.sh
 
       - name: 💾 保存报告
         if: always()
