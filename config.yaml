@@ -1,0 +1,42 @@
+# ============================================
+# A股自动分析系统 - 配置文件
+# ============================================
+
+# 股票列表（可自由增减）
+stocks:
+  - code: "002170"
+    name: "芭田股份"
+    market: "sz"       # sh=上海, sz=深圳, bj=北京
+
+  # 以下为示例，取消注释即可启用
+  # - code: "600519"
+  #   name: "贵州茅台"
+  #   market: "sh"
+
+  # - code: "300750"
+  #   name: "宁德时代"
+  #   market: "sz"
+
+  # - code: "000858"
+  #   name: "五粮液"
+  #   market: "sz"
+
+# 分析参数
+analysis:
+  kline_days: 120        # 获取最近N天K线数据（用于计算MA60等长周期指标）
+
+# ============================================
+# 方糖推送配置
+# ============================================
+# SendKey 通过环境变量 SERVERCHAN_SENDKEY 传入
+# 不要在配置文件中明文写入 SendKey！
+#
+# 本地运行时，设置环境变量：
+#   Windows:  set SERVERCHAN_SENDKEY=你的SendKey
+#   Linux:    export SERVERCHAN_SENDKEY=你的SendKey
+#
+# GitHub Actions 运行时：
+#   在仓库 Settings → Secrets → Actions 中添加:
+#   Name: SERVERCHAN_SENDKEY
+#   Value: 你的SendKey
+# ============================================

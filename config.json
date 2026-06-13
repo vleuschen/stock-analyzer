@@ -1,0 +1,12 @@
+{
+  "stocks": [
+    {
+      "code": "002170",
+      "name": "芭田股份",
+      "market": "sz"
+    }
+  ],
+  "analysis": {
+    "kline_days": 120
+  }
+}

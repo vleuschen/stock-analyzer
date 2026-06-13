@@ -1,0 +1,52 @@
+# ============================================
+# A股自动分析 - GitHub Actions 定时任务
+# 每个交易日北京时间 16:00（UTC 08:00）运行
+# 零外部依赖，直接使用 Python 内置模块
+# ============================================
+
+name: Daily Stock Analysis
+
+on:
+  schedule:
+    # UTC 08:00 = 北京时间 16:00
+    # 周一到周五运行（法定节假日需手动跳过）
+    - cron: '0 8 * * 1-5'
+
+  # 支持手动触发（仓库页面 → Actions → Run workflow）
+  workflow_dispatch:
+
+  # 推送代码时也运行（用于调试）
+  push:
+    branches:
+      - main
+    paths:
+      - '**.py'
+      - 'config.json'
+      - 'config.yaml'
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📊 运行分析
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        run: python analyzer.py
+
+      - name: 💾 保存报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-report-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
