@@ -25,14 +25,20 @@ def get_week_range() -> tuple:
 
 
 def load_daily_reports(monday: datetime, friday: datetime) -> list:
-    """读取周一至周五的所有日报"""
+    """读取周一至周五的所有日报（优先 daily 归档，回退到根目录）"""
     reports = []
     for i in range(5):
         day = monday + timedelta(days=i)
         date_str = day.strftime("%Y-%m-%d")
         year = day.strftime("%Y")
         month = day.strftime("%m")
+
+        # 优先从归档目录读取
         path = os.path.join("reports", "daily", year, month, f"report_{date_str}.md")
+        if not os.path.exists(path):
+            # 回退到根目录 reports/
+            path = os.path.join("reports", f"report_{date_str}.md")
+
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -208,8 +214,23 @@ def main():
     reports = load_daily_reports(monday, friday)
     valid_reports = [r for r in reports if r["content"]]
     if not valid_reports:
-        print("❌ 本周没有找到任何日报，无法生成复盘")
-        sys.exit(1)
+        print("⚠️ 本周没有找到已归档的日报（首次运行时历史数据尚未归档）")
+        print("   ✅ 下周开始，每日报告会自动归档到 reports/daily/ 目录下")
+        body = (
+            f"# 📆 周复盘 | {year_week} ({week_label})\n\n"
+            "## 📝 周评\n\n"
+            "本周是复盘功能首次启用，暂无历史日报数据。\n\n"
+            "从下周开始，每个交易日的分析报告将自动归档，届时周复盘将包含完整的 AI 分析和信号统计。\n\n"
+            "---\n\n"
+            f"📬 自动生成于 {datetime.now().strftime('%Y-%m-%d')} · 仅供参考，不构成投资建议"
+        )
+        # 保存文件并退出（不报错）
+        os.makedirs("reports/weekly", exist_ok=True)
+        output_path = os.path.join("reports", "weekly", f"weekly-{year_week}.md")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(body)
+        print(f"✅ 已保存占位周报: {output_path}")
+        return
     print(f"   ️共找到 {len(valid_reports)} 天有效日报")
 
     # 解析信号统计
