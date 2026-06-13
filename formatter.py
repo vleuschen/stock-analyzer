@@ -1,226 +1,332 @@
 """
 分析结果格式化模块
-将技术指标和策略信号格式化为 Markdown，适配方糖推送
+风格：像朋友分享，带点 emoji，少 AI 味儿，看着不累
 """
 
 
-def _fmt_num(val, decimals=2):
+def _f(val, decimals=2):
     """格式化数字"""
     if val is None:
         return "-"
     return f"{val:.{decimals}f}"
 
 
-def _fmt_amount(val):
-    """格式化金额（元 → 亿/万）"""
-    if val is None:
+def _amt(val):
+    """格式化金额"""
+    if val is None or val == 0:
         return "-"
     if abs(val) >= 1e8:
         return f"{val / 1e8:.2f}亿"
     elif abs(val) >= 1e4:
         return f"{val / 1e4:.0f}万"
-    else:
-        return f"{val:.0f}"
+    return f"{val:.0f}"
 
 
-def _fmt_pct(val):
+def _pct(val, sign=True):
     """格式化百分比"""
     if val is None:
         return "-"
-    sign = "+" if val > 0 else ""
-    return f"{sign}{val:.2f}%"
+    s = "+" if val > 0 and sign else ""
+    return f"{s}{val:.2f}%"
 
 
-def format_stock_analysis(
-    stock_config: dict,
-    quote: dict,
-    indicators: dict,
-    swing: dict,
-    date_str: str,
-) -> str:
-    """
-    格式化单只股票的分析报告（Markdown）
-    """
-    name = stock_config.get("name", quote.get("name", "未知"))
-    code = stock_config.get("code", quote.get("code", "------"))
+def _signal_tag(signal):
+    """信号标签"""
+    tags = {
+        "strong_buy": "买入",
+        "buy": "偏多",
+        "neutral": "观望",
+        "sell": "偏空",
+        "strong_sell": "回避",
+    }
+    return tags.get(signal, "未知")
+
+
+def _signal_mark(signal):
+    """信号标记（emoji版）"""
+    marks = {
+        "strong_buy": "🚀",    # 火箭，冲！
+        "buy": "📈",           # 向上
+        "neutral": "⏳",       # 等一等
+        "sell": "📉",          # 向下
+        "strong_sell": "⚠️",   # 小心
+    }
+    return marks.get(signal, "❓")
+
+
+def _collect_highlights(results: list) -> list:
+    """从所有股票中收集值得关注的亮点，带 emoji"""
+    highlights = []
+
+    for r in results:
+        name = r.get("config", {}).get("name", "")
+        ind = r.get("indicators", {})
+        swing = r.get("swing", {})
+        macd = ind.get("macd", {})
+        rsi = ind.get("rsi", {})
+        boll = ind.get("bollinger", {})
+        ma_pos = ind.get("ma_positions", {})
+        chg = ind.get("price_changes", {})
+        vol_ratio = ind.get("volume_ratio", 1)
+
+        # MACD 金叉
+        if macd.get("is_golden_cross"):
+            highlights.append(f"🟢 {name} MACD 金叉，短期动能转强")
+
+        # MACD 死叉
+        if macd.get("is_death_cross"):
+            highlights.append(f"🔴 {name} MACD 死叉，注意短期风险")
+
+        # RSI 超卖
+        rsi14 = rsi.get("rsi14")
+        if rsi14 is not None:
+            if rsi14 < 20:
+                highlights.append(f"📉 {name} RSI={_f(rsi14, 1)}，极度超卖，关注反弹机会")
+            elif rsi14 < 30:
+                highlights.append(f"📊 {name} RSI={_f(rsi14, 1)}，进入超卖区间")
+            elif rsi14 > 80:
+                highlights.append(f"📈 {name} RSI={_f(rsi14, 1)}，极度超买，警惕回调")
+            elif rsi14 > 70:
+                highlights.append(f"📊 {name} RSI={_f(rsi14, 1)}，进入超买区间")
+
+        # 布林带极端位置
+        boll_pos = boll.get("position", 50)
+        if boll_pos < 10:
+            highlights.append(f"🛡️ {name} 触及布林下轨，短线超跌")
+        elif boll_pos > 90:
+            highlights.append(f"🔥 {name} 触及布林上轨，短线强势")
+
+        # 放量突破均线
+        if vol_ratio > 1.5 and ma_pos.get("ma10") == "above" and ma_pos.get("ma20") == "below":
+            highlights.append(f"💥 {name} 放量突破 MA10，关注能否站稳 MA20")
+
+        # 均线多头/空头排列
+        alignment = ind.get("ma_alignment", "")
+        if alignment == "bullish":
+            highlights.append(f"🌱 {name} 均线转为多头排列，趋势向好")
+
+        # 大幅波动
+        chg5 = chg.get("5d", 0)
+        if abs(chg5) > 10:
+            direction = "急涨" if chg5 > 0 else "急跌"
+            highlights.append(f"🎢 {name} 近5日{direction} {_pct(chg5)}")
+
+    return highlights
+
+
+def format_daily_summary(results: list, date_str: str) -> str:
+    """生成每日市场总结——像人话"""
+    lines = []
+
+    # 统计信号分布
+    signals = {}
+    for r in results:
+        s = r.get("swing", {}).get("signal", "unknown")
+        signals[s] = signals.get(s, 0) + 1
+
+    buy_count = signals.get("strong_buy", 0) + signals.get("buy", 0)
+    neutral_count = signals.get("neutral", 0)
+    sell_count = signals.get("sell", 0) + signals.get("strong_sell", 0)
+    total = len(results)
+
+    # 市场情绪——说得像人话
+    if buy_count > sell_count * 2:
+        mood_emoji = "☀️"
+        mood = "今天整体偏暖，多数标的有积极信号"
+    elif sell_count > buy_count * 2:
+        mood_emoji = "🌧️"
+        mood = "今天比较疲软，大部分标的还在往下走"
+    elif sell_count > buy_count:
+        mood_emoji = "⛅"
+        mood = "偏弱震荡，空头占优，不过也不算太极端"
+    elif buy_count > sell_count:
+        mood_emoji = "🌤️"
+        mood = "震荡偏强，部分标的有企稳的苗头"
+    else:
+        mood_emoji = "🌊"
+        mood = "多空僵持，信号比较乱"
+
+    # 开头——简洁自然
+    lines.append(f"{mood_emoji} 跟踪 {total} 只标的，{mood}")
+    lines.append("")
+
+    # 信号分布（一行带过）
+    parts = []
+    if buy_count:
+        parts.append(f"看好 {buy_count} 只")
+    if neutral_count:
+        parts.append(f"观望 {neutral_count} 只")
+    if sell_count:
+        parts.append(f"看空 {sell_count} 只")
+    lines.append(f"{' · '.join(parts)}")
+    lines.append("")
+
+    # 亮点——有情况才列
+    highlights = _collect_highlights(results)
+    if highlights:
+        lines.append("**👀 值得看看：**")
+        lines.append("")
+        for h in highlights:
+            lines.append(f"- {h}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_stock_brief(r: dict) -> str:
+    """格式化单只股票简报——笔记风格"""
+    config = r.get("config", {})
+    quote = r.get("quote", {})
+    ind = r.get("indicators", {})
+    swing = r.get("swing", {})
+
+    name = config.get("name", "")
+    code = config.get("code", "")
+    price = quote.get("price", 0)
+    pct = quote.get("pct_change", 0)
+    signal = swing.get("signal", "")
+    action = swing.get("action", "")
+    score = swing.get("score", 0)
+    ma_align = ind.get("ma_alignment", "")
+    rsi14 = ind.get("rsi", {}).get("rsi14")
+    macd = ind.get("macd", {})
+    boll = ind.get("bollinger", {})
+    vol_ratio = ind.get("volume_ratio", 1)
+    chg = ind.get("price_changes", {})
 
     lines = []
-    lines.append(f"## {name}（{code}）")
+    # 标题行：股票名 + emoji信号
+    lines.append(f"### {name}（{code}）{_signal_mark(signal)} {_signal_tag(signal)}")
     lines.append("")
 
-    # ===== 行情快照 =====
-    pct = quote.get("pct_change", 0)
-    pct_emoji = "📈" if pct > 0 else "📉" if pct < 0 else "➡️"
-    lines.append(f"**行情快照** {pct_emoji}")
-    lines.append("")
-    lines.append(f"| 项目 | 数值 |")
-    lines.append(f"|---|---|")
-    lines.append(f"| 最新价 | **{_fmt_num(quote.get('price'))}** ({_fmt_pct(pct)}) |")
-    lines.append(f"| 开盘 / 最高 / 最低 | {_fmt_num(quote.get('open'))} / {_fmt_num(quote.get('high'))} / {_fmt_num(quote.get('low'))} |")
-    lines.append(f"| 成交额 | {_fmt_amount(quote.get('amount'))} |")
-    lines.append(f"| 换手率 | {_fmt_pct(quote.get('turnover'))} |")
-    lines.append(f"| 振幅 | {_fmt_pct(quote.get('amplitude'))} |")
-    lines.append(f"| PE(TTM) | {_fmt_num(quote.get('pe_ttm'))}x |")
-    lines.append(f"| PB | {_fmt_num(quote.get('pb'))}x |")
-    lines.append(f"| 总市值 | {_fmt_amount(quote.get('total_mv'))} |")
+    # 价格 + 涨跌 + 成交
+    arrow = " 🔺" if pct > 0 else " 🔻" if pct < 0 else ""
+    lines.append(f"**{_f(price)}** {arrow}（{_pct(pct)}）  💰 {_amt(quote.get('amount'))}  换手{_f(quote.get('turnover'), 1)}%")
     lines.append("")
 
-    # ===== 技术信号 =====
-    signal_emoji = swing.get("signal_emoji", "⚪")
-    signal_text = swing.get("signal_text", "未知")
-    confidence = swing.get("confidence", "低")
-    lines.append(f"**技术信号: {signal_emoji} {signal_text}** （置信度: {confidence}）")
-    lines.append("")
+    # 技术面——紧凑但不枯燥
+    tech_parts = []
 
     # 均线
-    ma = indicators.get("ma", {})
-    ma_pos = indicators.get("ma_positions", {})
-    alignment = indicators.get("ma_alignment", "")
-
-    alignment_map = {"bullish": "多头排列 📈", "bearish": "空头排列 📉", "mixed": "交织 ⚠️"}
-    alignment_text = alignment_map.get(alignment, alignment)
-
-    lines.append(f"- **均线**: {alignment_text}")
-    for name_ma, key in [("MA5", "ma5"), ("MA10", "ma10"), ("MA20", "ma20"), ("MA60", "ma60")]:
-        val = ma.get(key)
-        if val is not None:
-            pos = "↑上" if ma_pos.get(key) == "above" else "↓下"
-            lines.append(f"  - {name_ma}: {_fmt_num(val)} (股价在{pos})")
+    align_text = {"bullish": "多头📈", "bearish": "空头📉", "mixed": "交织⚖️"}.get(ma_align, "")
+    if align_text:
+        tech_parts.append(f"均线{align_text}")
 
     # RSI
-    rsi = indicators.get("rsi", {})
-    rsi6 = rsi.get("rsi6")
-    rsi14 = rsi.get("rsi14")
     if rsi14 is not None:
-        rsi_status = "超买" if rsi14 > 70 else "超卖" if rsi14 < 30 else "中性"
-        lines.append(f"- **RSI**: RSI6={_fmt_num(rsi6, 1)} / RSI14={_fmt_num(rsi14, 1)} ({rsi_status})")
+        if rsi14 > 70:
+            tech_parts.append(f"RSI {_f(rsi14, 1)} ⚠️超买")
+        elif rsi14 < 30:
+            tech_parts.append(f"RSI {_f(rsi14, 1)} 💫超卖")
+        else:
+            tech_parts.append(f"RSI {_f(rsi14, 1)}")
 
     # MACD
-    macd = indicators.get("macd", {})
-    dif = macd.get("dif", 0)
-    dea = macd.get("dea", 0)
-    macd_hist = macd.get("macd_hist", 0)
-    macd_status = ""
     if macd.get("is_golden_cross"):
-        macd_status = "🟢 金叉！"
+        tech_parts.append("MACD 🟢金叉")
     elif macd.get("is_death_cross"):
-        macd_status = "🔴 死叉！"
-    elif dif > dea:
-        macd_status = "多头"
+        tech_parts.append("MACD 🔴死叉")
+    elif macd.get("dif", 0) > macd.get("dea", 0):
+        tech_parts.append("MACD 多头")
     else:
-        macd_status = "空头"
-    lines.append(f"- **MACD**: DIF={_fmt_num(dif, 3)} / DEA={_fmt_num(dea, 3)} / 柱={_fmt_num(macd_hist, 3)} ({macd_status})")
+        tech_parts.append("MACD 空头")
 
-    # 布林带
-    boll = indicators.get("bollinger", {})
-    lines.append(f"- **布林带**: 上轨{_fmt_num(boll.get('upper'))} / 中轨{_fmt_num(boll.get('middle'))} / 下轨{_fmt_num(boll.get('lower'))}")
+    # 量能
+    if vol_ratio > 1.5:
+        tech_parts.append(f"💥放量({_f(vol_ratio, 1)})")
+    elif vol_ratio < 0.6:
+        tech_parts.append(f"💤缩量({_f(vol_ratio, 1)})")
+
+    lines.append(" · ".join(tech_parts))
+    lines.append("")
+
+    # 布林位置
     boll_pos = boll.get("position", 50)
-    boll_desc = "上轨附近" if boll_pos > 70 else "下轨附近" if boll_pos < 30 else "中轨附近"
-    lines.append(f"  - 当前位置: {boll_desc}（{boll_pos:.0f}%）")
+    boll_emoji = "⬆️" if boll_pos > 60 else "⬇️" if boll_pos < 40 else "➡️"
+    lines.append(f"📐 布林{boll_emoji}（{_f(boll_pos, 0)}%）")
 
-    # 量价
-    vol_ratio = indicators.get("volume_ratio", 1)
-    vol_desc = "放量" if vol_ratio > 1.3 else "缩量" if vol_ratio < 0.7 else "平量"
-    lines.append(f"- **量比**: {vol_ratio:.2f} ({vol_desc})")
-
-    # 波动率
-    vol = indicators.get("volatility", 0)
-    lines.append(f"- **年化波动率**: {_fmt_num(vol, 1)}%")
-
-    # 区间涨跌
-    chg = indicators.get("price_changes", {})
-    lines.append(f"- **区间涨跌**: 5日{_fmt_pct(chg.get('5d', 0))} / 10日{_fmt_pct(chg.get('10d', 0))} / 20日{_fmt_pct(chg.get('20d', 0))}")
-    lines.append("")
-
-    # ===== 波段建议 =====
-    lines.append("**波段建议**")
-    lines.append("")
-    lines.append(f"> **操作**: {swing.get('action', '-')}")
-    lines.append("")
-
-    # 支撑位
+    # 支撑 / 压力
     support = swing.get("support_levels", [])
+    resist = swing.get("resistance_levels", [])
+    info_parts = []
     if support:
-        support_str = " / ".join(f"{name}({_fmt_num(price)})" for name, price in support)
-        lines.append(f"- 📗 支撑位: {support_str}")
-
-    # 压力位
-    resistance = swing.get("resistance_levels", [])
-    if resistance:
-        resist_str = " / ".join(f"{name}({_fmt_num(price)})" for name, price in resistance)
-        lines.append(f"- 📕 压力位: {resist_str}")
-
+        s_str = " · ".join(f"{n} {_f(p)}" for n, p in support[:2])
+        info_parts.append(f"🛡️ {s_str}")
+    if resist:
+        r_str = " · ".join(f"{n} {_f(p)}" for n, p in resist[:2])
+        info_parts.append(f"🧱 {r_str}")
+    if info_parts:
+        lines.append(" | ".join(info_parts))
     lines.append("")
 
-    # ===== 信号明细 =====
-    lines.append("<details>")
-    lines.append("<summary>📋 信号明细（点击展开）</summary>")
-    lines.append("")
-    for reason in swing.get("reasons", []):
-        lines.append(f"- {reason}")
-    lines.append("")
-    lines.append("</details>")
-    lines.append("")
-    lines.append("---")
+    # 操作建议（核心结论）
+    lines.append(f"> {action}")
     lines.append("")
 
     return "\n".join(lines)
 
 
-def format_full_report(
-    stock_results: list[dict],
-    date_str: str,
-) -> tuple[str, str]:
+def format_full_report(results: list, date_str: str) -> tuple:
     """
-    格式化完整报告（多只股票合并）
+    格式化完整报告
     返回: (title, markdown_body)
     """
-    title = f"📊 A股波段分析 | {date_str}"
+    title = f"📊 波段分析 {len(results)} 只 | {date_str}"
 
     lines = []
-    lines.append(f"# 📊 A股波段分析报告")
-    lines.append(f"")
-    lines.append(f"**分析日期**: {date_str}")
-    lines.append(f"**跟踪标的**: {len(stock_results)} 只")
+
+    # === 每日总结 ===
+    lines.append(format_daily_summary(results, date_str))
+    lines.append("---")
     lines.append("")
 
-    # 总览表
-    lines.append("## 📋 信号总览")
-    lines.append("")
-    lines.append("| 股票 | 最新价 | 涨跌幅 | 信号 | 建议 |")
-    lines.append("|---|---|---|---|---|")
+    # === 总览表 ===
+    lines.append("| 📊 标的 | 💰 价格 | 📈 涨跌 | 🎯 信号 | 📐 均线 | 📡 RSI | 🔄 MACD |")
+    lines.append("|---|---|---|---|---|---|---|")
 
-    for result in stock_results:
-        quote = result.get("quote", {})
-        swing = result.get("swing", {})
-        name = result.get("config", {}).get("name", quote.get("name", ""))
-        price = _fmt_num(quote.get("price"))
-        pct = _fmt_pct(quote.get("pct_change", 0))
-        signal = f"{swing.get('signal_emoji', '')} {swing.get('signal_text', '-')}"
-        action = swing.get("action", "-")
-        # 截取 action 前 20 字
-        if len(action) > 20:
-            action = action[:20] + "..."
-        lines.append(f"| {name} | {price} | {pct} | {signal} | {action} |")
+    for r in results:
+        config = r.get("config", {})
+        quote = r.get("quote", {})
+        ind = r.get("indicators", {})
+        swing = r.get("swing", {})
+
+        name = config.get("name", "")
+        price = _f(quote.get("price"))
+        pct = _pct(quote.get("pct_change", 0))
+        tag = _signal_tag(swing.get("signal", ""))
+        align = {"bullish": "多📈", "bearish": "空📉", "mixed": "混⚖️"}.get(ind.get("ma_alignment", ""), "-")
+
+        rsi14 = ind.get("rsi", {}).get("rsi14")
+        rsi_str = _f(rsi14, 0) if rsi14 else "-"
+        # 极端值加标记
+        if rsi14 and rsi14 < 30:
+            rsi_str += "💫"
+        elif rsi14 and rsi14 > 70:
+            rsi_str += "⚠️"
+
+        macd = ind.get("macd", {})
+        if macd.get("is_golden_cross"):
+            macd_str = "🟢金叉"
+        elif macd.get("is_death_cross"):
+            macd_str = "🔴死叉"
+        elif macd.get("dif", 0) > macd.get("dea", 0):
+            macd_str = "多"
+        else:
+            macd_str = "空"
+
+        lines.append(f"| {name} | {price} | {pct} | {tag} | {align} | {rsi_str} | {macd_str} |")
 
     lines.append("")
     lines.append("---")
     lines.append("")
 
-    # 逐只股票详情
-    for result in stock_results:
-        config = result.get("config", {})
-        quote = result.get("quote", {})
-        indicators = result.get("indicators", {})
-        swing = result.get("swing", {})
+    # === 逐只详情 ===
+    for r in results:
+        lines.append(format_stock_brief(r))
+        lines.append("---")
+        lines.append("")
 
-        report = format_stock_analysis(config, quote, indicators, swing, date_str)
-        lines.append(report)
-
-    # 免责声明
-    lines.append("")
-    lines.append("> ⚠️ **免责声明**: 以上分析基于技术指标自动生成，仅供参考，不构成投资建议。股市有风险，投资需谨慎。")
-    lines.append("")
-    lines.append(f"*由 stock-analyzer 自动生成 | {date_str}*")
+    # 底部——自然一点
+    lines.append(f"📬 {date_str} 盘后笔记 · 仅供复盘参考，不构成投资建议")
 
     return title, "\n".join(lines)

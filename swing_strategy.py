@@ -143,31 +143,31 @@ def analyze_swing_signals(indicators: dict, money_flow: list[dict] = None) -> di
         signal = "strong_buy"
         signal_emoji = "🟢"
         signal_text = "强烈买入"
-        action = "建议加仓，突破关键压力位可加大仓位"
+        action = "可以加点仓 🚀 突破压力位的话继续跟进"
         confidence = "high" if score >= 60 else "medium"
     elif score >= 15:
         signal = "buy"
         signal_emoji = "🟢"
         signal_text = "偏多"
-        action = "可轻仓试探，设置好止损位"
+        action = "轻仓试试水 🎯 记得设好止损"
         confidence = "medium"
     elif score >= -15:
         signal = "neutral"
         signal_emoji = "🟡"
         signal_text = "观望"
-        action = "信号不明确，建议等待方向明朗"
+        action = "先等等 ⏳ 方向不明朗，别着急动手"
         confidence = "low"
     elif score >= -40:
         signal = "sell"
         signal_emoji = "🔴"
         signal_text = "偏空"
-        action = "建议减仓，跌破支撑位应果断止损"
+        action = "减点仓稳妥 📉 破了支撑别犹豫"
         confidence = "medium"
     else:
         signal = "strong_sell"
         signal_emoji = "🔴"
         signal_text = "强烈回避"
-        action = "建议清仓离场，等待企稳信号"
+        action = "先出来避避 ⚠️ 等企稳了再找机会"
         confidence = "high" if score <= -60 else "medium"
 
     # ========== 支撑位 & 压力位 ==========
