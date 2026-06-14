@@ -5,7 +5,8 @@
     {"code": "002027", "name": "分众传媒", "market": "sz"},
     {"code": "600637", "name": "东方明珠", "market": "sh"},
     {"code": "300785", "name": "值得买",   "market": "sz"},
-    {"code": "002264", "name": "新华都",   "market": "sz"}
+    {"code": "002264", "name": "新华都",   "market": "sz"},
+    {"code": "002741", "name": "光华科技", "market": "sz"}
   ],
   "analysis": {
     "kline_days": 120
