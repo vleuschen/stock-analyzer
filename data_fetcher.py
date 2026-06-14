@@ -32,6 +32,7 @@ MARKET_MAP = {
 }
 
 
+
 def _get_symbol(code: str, market: str) -> str:
     """构造证券代码: sh600519 / sz002170"""
     m = MARKET_MAP.get(market.lower(), "sz")
@@ -111,6 +112,13 @@ def fetch_realtime_quote(code: str, market: str) -> dict:
     change = price - pre_close if pre_close else 0
     pct_change = (change / pre_close * 100) if pre_close else 0
 
+    # 腾讯行情 API 字段 [62]/[70]/[71] 包含资金流向数据（百万元）
+    # 与东方财富 stock/get 接口 f120-122 数据一致（f*100）
+    # [62] = 中单净流入(百万元), [70] = 主力净流入(百万元), [71] = 小单净流入(百万元)
+    main_net_mv = safe_float(fields[70]) if len(fields) > 70 else 0  # 百万元
+    small_net_mv = safe_float(fields[71]) if len(fields) > 71 else 0
+    medium_net_mv = safe_float(fields[62]) if len(fields) > 62 else 0
+
     return {
         "code": fields[2],
         "name": fields[1],
@@ -130,6 +138,10 @@ def fetch_realtime_quote(code: str, market: str) -> dict:
         "circ_mv": safe_float(fields[44]) * 1e8 if len(fields) > 44 else 0,   # 亿→元
         "amplitude": safe_float(fields[43]) if len(fields) > 43 else 0,  # %
         "volume_ratio": safe_float(fields[49]) if len(fields) > 49 else 0,
+        # 资金流向（来自腾讯行情 API 字段 [62]/[70]/[71]）
+        "main_net": main_net_mv * 1000000,    # 百万元→元
+        "small_net": small_net_mv * 1000000,
+        "medium_net": medium_net_mv * 1000000,
     }
 
 
@@ -197,9 +209,21 @@ def fetch_kline(code: str, market: str, days: int = 120, frequency: str = "daily
     return klines
 
 
+def _fmt_money(val: float) -> str:
+    """格式化金额显示"""
+    if val is None or val == 0:
+        return "0"
+    if abs(val) >= 1e8:
+        return f"{val / 1e8:.2f}亿"
+    elif abs(val) >= 1e4:
+        return f"{val / 1e4:.0f}万"
+    return f"{val:.0f}"
+
+
 def fetch_stock_data(code: str, market: str, kline_days: int = 120) -> dict:
     """
-    一站式获取股票全部数据（行情 + K线）
+    一站式获取股票全部数据（行情 + K线 + 资金流向）
+    资金流向数据从腾讯行情 API 内嵌字段提取，无需额外接口
     """
     quote = fetch_realtime_quote(code, market)
     time.sleep(0.3)
@@ -207,8 +231,19 @@ def fetch_stock_data(code: str, market: str, kline_days: int = 120) -> dict:
     klines = fetch_kline(code, market, days=kline_days)
     time.sleep(0.3)
 
+    # 从行情数据中提取资金流向
+    main_net = quote.get("main_net", 0)
+    if main_net:
+        _dir = "净流入" if main_net > 0 else "净流出"
+        print(f"  ✅ 资金流向: 主力{_dir} {_fmt_money(abs(main_net))}")
+
     return {
         "quote": quote,
         "klines": klines,
-        "money_flow": [],  # 腾讯API暂不支持资金流向
+        "money_flow": [{
+            "main_net": quote.get("main_net", 0),
+            "small_net": quote.get("small_net", 0),
+            "medium_net": quote.get("medium_net", 0),
+            "date": time.strftime("%Y-%m-%d"),
+        }] if quote.get("main_net") != 0 or quote.get("small_net") != 0 else [],
     }

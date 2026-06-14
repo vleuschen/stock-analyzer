@@ -99,6 +99,7 @@ def analyze_stock(stock_config: dict, kline_days: int = 120) -> dict:
         "klines": klines,
         "indicators": indicators,
         "swing": swing,
+        "money_flow": money_flow,
     }
 
 

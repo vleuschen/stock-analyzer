@@ -111,6 +111,15 @@ def _collect_highlights(results: list) -> list:
             direction = "急涨" if chg5 > 0 else "急跌"
             highlights.append(f"🎢 {name} 近5日{direction} {_pct(chg5)}")
 
+        # 主力资金大幅流入/流出
+        money_flow = r.get("money_flow", [])
+        if money_flow:
+            main_net = money_flow[0].get("main_net", 0)
+            if main_net > 1e8:  # 超过1亿
+                highlights.append(f"💰 {name} 主力净流入 {_amt(main_net)}")
+            elif main_net < -1e8:
+                highlights.append(f"💸 {name} 主力净流出 {_amt(abs(main_net))}")
+
     return highlights
 
 
@@ -240,6 +249,28 @@ def format_stock_brief(r: dict) -> str:
     lines.append(" · ".join(tech_parts))
     lines.append("")
 
+    # 资金流向
+    money_flow = r.get("money_flow", [])
+    if money_flow:
+        mf = money_flow[0]
+        main_net = mf.get("main_net", 0)
+        small_net = mf.get("small_net", 0)
+
+        if main_net > 0:
+            mf_emoji = "🟢"
+            mf_dir = "净流入"
+        else:
+            mf_emoji = "🔴"
+            mf_dir = "净流出"
+
+        mf_parts = [f"{mf_emoji}主力{mf_dir} {_amt(abs(main_net))}"]
+        if small_net > 0:
+            mf_parts.append(f"小单+{_amt(small_net)}")
+        elif small_net < 0:
+            mf_parts.append(f"小单{_amt(small_net)}")
+        lines.append(" · ".join(mf_parts))
+        lines.append("")
+
     # 布林位置
     boll_pos = boll.get("position", 50)
     boll_emoji = "⬆️" if boll_pos > 60 else "⬇️" if boll_pos < 40 else "➡️"
@@ -281,8 +312,8 @@ def format_full_report(results: list, date_str: str) -> tuple:
     lines.append("")
 
     # === 总览表 ===
-    lines.append("| 📊 标的 | 💰 价格 | 📈 涨跌 | 🎯 信号 | 📐 均线 | 📡 RSI | 🔄 MACD |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| 📊 标的 | 💰 价格 | 📈 涨跌 | 🎯 信号 | 📐 均线 | 📡 RSI | 🔄 MACD | 💰 主力净流入 |")
+    lines.append("|---|---|---|---|---|---|---|---|")
 
     for r in results:
         config = r.get("config", {})
@@ -314,7 +345,20 @@ def format_full_report(results: list, date_str: str) -> tuple:
         else:
             macd_str = "空"
 
-        lines.append(f"| {name} | {price} | {pct} | {tag} | {align} | {rsi_str} | {macd_str} |")
+        # 资金流向
+        money_flow = r.get("money_flow", [])
+        if money_flow:
+            main_net = money_flow[0].get("main_net", 0)
+            if main_net > 0:
+                mf_str = f"🟢+{_amt(main_net)}"
+            elif main_net < 0:
+                mf_str = f"🔴{_amt(main_net)}"
+            else:
+                mf_str = "⚪0"
+        else:
+            mf_str = "-"
+
+        lines.append(f"| {name} | {price} | {pct} | {tag} | {align} | {rsi_str} | {macd_str} | {mf_str} |")
 
     lines.append("")
     lines.append("---")
