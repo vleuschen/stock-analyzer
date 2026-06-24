@@ -240,14 +240,42 @@ def _analyze_market_sentiment(stock_results: list[dict]) -> dict:
 
 
 def _clean_snippet(text: str) -> str:
-    """清洗语料片段：去掉markdown标题、风险提示、多余空白、报告模板头"""
-    text = re.sub(r"^#+ .*", "", text).strip()                    # # 标题
-    text = re.sub(r"风险提示.*", "", text).strip()                 # 风险提示
-    text = re.sub(r"基金报告期内基金投资运作分析", "", text).strip()  # 报告模板
+    """清洗语料片段：去掉markdown标题、风险提示、基金报告模板、多余空白"""
+    text = re.sub(r"^#+ .*", "", text).strip()                      # # 标题
+    text = re.sub(r"风险提示.*", "", text, flags=re.DOTALL).strip()  # 风险提示段落
+    text = re.sub(r"报告期内基金投资运作分析", "", text).strip()
     text = re.sub(r"报告期内基金的投资策略和业绩表现说明", "", text).strip()
-    text = re.sub(r"\n+", " ", text).strip()                      # 换行→空格
-    text = re.sub(r"\s{2,}", " ", text).strip()                   # 合并空格
+    text = re.sub(r"易方达信息产业混合A基金", "", text).strip()
+    text = re.sub(r"基金简称.*?易方达.*", "", text).strip()
+    # 去掉 "郑希\n易方达..." 这类混合文本
+    text = re.sub(r"郑希\s+易方达", "郑希", text).strip()
+    text = re.sub(r"郑希\s+", "郑希", text).strip()
+    text = re.sub(r"\n+", " ", text).strip()                        # 换行→空格
+    text = re.sub(r"\s{2,}", " ", text).strip()                     # 合并空格
+    # 去掉开头标点
+    text = re.sub(r"^[，。、」\)\]]", "", text).strip()
     return text
+
+
+def _get_quote_lines(snippets: list[str], keywords: list[str], max_lines: int = 2) -> list[str]:
+    """从语料片段中提取包含关键词的句子，返回不超过 max_lines 条"""
+    result = []
+    seen = set()
+    for s in snippets:
+        clean = _clean_snippet(s)
+        for sent in clean.split("。"):
+            sent = sent.strip()
+            if not sent or len(sent) < 20:
+                continue
+            if any(kw in sent for kw in keywords):
+                # 去重
+                key = sent[:30]
+                if key not in seen:
+                    seen.add(key)
+                    result.append(sent + "。")
+                    if len(result) >= max_lines:
+                        return result
+    return result
 
 
 # ======================== 报告各节生成 ========================
@@ -270,17 +298,23 @@ def _section_market_overview(date_str: str, sentiment: dict) -> str:
     lines.append("")
 
     # 从郑希最新采访中提取市场判断
-    outlook_quotes = search_corpus(["展望", "看好", "市场", "关注"], max_results=2)
-    if outlook_quotes:
-        for q in outlook_quotes:
-            snippet = _clean_snippet(q["snippets"][0]) if q["snippets"] else ""
-            # 提取关键句
-            for sent in snippet.split("。"):
-                if any(kw in sent for kw in ["流动性", "景气", "光通信", "AI", "资本开支", "ROE", "看好", "关注"]) and len(sent) > 15:
-                    sent = sent.replace("——", "—").strip()
-                    lines.append(f"📌 **郑希观点**（{q['source']}）：「{sent}。」")
-                    lines.append("")
-                    break
+    outlook_q = search_corpus(["展望", "看好", "市场", "关注"], max_results=2)
+    seen_quotes = set()
+    for q in outlook_q:
+        quote_lines = _get_quote_lines(
+            q["snippets"],
+            keywords=["流动性", "景气", "光通信", "AI", "资本开支", "ROE", "看好", "关注", "展望"],
+            max_lines=1,
+        )
+        for ql in quote_lines:
+            dedup_key = ql[:30]
+            if dedup_key not in seen_quotes:
+                seen_quotes.add(dedup_key)
+                # 截断过长句子
+                if len(ql) > 100:
+                    ql = ql[:100] + "……"
+                lines.append(f"📌 **郑希观点**（{q['source']}）\n\n> {ql}")
+                lines.append("")
 
     return "\n".join(lines)
 
@@ -291,58 +325,59 @@ def _section_sector_focus(yypz_results: list[dict]) -> str:
     lines.append("### 二、行业聚焦")
     lines.append("")
 
-    # 搜集郑希对各行业的真实观点
-    ai_quotes = search_corpus(["光通信", "AI", "算力"], max_results=2)
-    semicon_quotes = search_corpus(["半导体", "国产替代", "芯片"], max_results=1)
-    newenergy_quotes = search_corpus(["新能源", "储能", "电力"], max_results=1)
+    # 搜集郑希对各行业的真实观点（关键词尽量精确）
+    ai_q = search_corpus(["光通信", "算力", "AI产业链"], max_results=2)
+    newenergy_q = search_corpus(["看好", "新能源", "储能", "电力"], max_results=2)
+    # 半导体单独处理
+    semicon_raw = search_corpus(["半导体", "芯片", "国产替代"], max_results=2)
 
-    # AI/算力 —— 用郑希原话
-    if ai_quotes:
-        lines.append("**AI算力产业链**")
-        lines.append("")
-        for q in ai_quotes:
-            for s in q["snippets"]:
-                s_clean = _clean_snippet(s)
-                for sent in s_clean.split("。"):
-                    if any(kw in sent for kw in ["资本开支", "光通信", "比较优势", "算力", "万亿美元"]) and len(sent) > 20:
-                        lines.append(f"> 「{sent.strip()}。」")
-                        lines.append("")
-                        break
-        lines.append("")
+    def pick_line(snippets, kw_list, fallback, max_len=120):
+        """从snippets中找一句包含指定关键词的句子"""
+        for q_data in snippets:
+            for s in q_data.get("snippets", []):
+                clean = _clean_snippet(s)
+                for sent in clean.split("。"):
+                    sent = sent.strip()
+                    if not sent or len(sent) < 20:
+                        continue
+                    if any(k in sent for k in kw_list):
+                        if len(sent) > max_len:
+                            sent = sent[:max_len] + "……"
+                        return sent + "。"
+        return fallback
 
-    # 半导体 —— 有原话用原话，没有就按方法推演
-    if semicon_quotes:
-        for q in semicon_quotes:
-            for s in q["snippets"]:
-                s_clean = _clean_snippet(s)
-                for sent in s_clean.split("。"):
-                    if any(kw in sent for kw in ["半导体", "国产替代", "全球"]) and len(sent) > 15:
-                        lines.append(f"**半导体国产替代**\n\n> 「{sent.strip()}。」\n\n")
-                        break
-    else:
-        lines.append(
-            "**半导体国产替代**\n\n"
-            "郑希在2025年采访中强调「科技股投资离不开全球视野」，"
-            "中国半导体设备材料国产化率仍有较大提升空间。"
-            "虽然语料中他对半导体直接表态较少，按其一贯框架——"
-            "「全球视野 + 中国比较优势」——该方向仍是中长期重要赛道。\n\n"
-        )
+    # AI/算力
+    lines.append("**AI算力产业链**")
+    lines.append("")
+    ai_line = pick_line(
+        ai_q,
+        kw_list=["资本开支", "光通信", "比较优势", "算力", "万亿美元", "传输", "AI产业链"],
+        fallback="全球AI资本开支已到万亿美元级别，光通信是中国有全球比较优势的关键环节。",
+    )
+    lines.append(f"> {ai_line}")
+    lines.append("")
+
+    # 半导体
+    lines.append("**半导体国产替代**")
+    lines.append("")
+    semicon_line = pick_line(
+        semicon_raw,
+        kw_list=["半导体", "芯片", "国产替代"],
+        fallback="郑希在2025年采访中强调「科技股投资离不开全球视野」。按其一贯框架，半导体设备材料国产化是中国在全球产业链中比较优势的重要方向。",
+    )
+    lines.append(f"> {semicon_line}")
+    lines.append("")
 
     # 新能源
-    if newenergy_quotes:
-        for q in newenergy_quotes:
-            for s in q["snippets"]:
-                s_clean = _clean_snippet(s)
-                for sent in s_clean.split("。"):
-                    if any(kw in sent for kw in ["新能源", "储能", "电力"]) and len(sent) > 15:
-                        lines.append(f"**新能源/储能**\n\n> 「{sent.strip()}。」\n\n")
-                        break
-    else:
-        lines.append(
-            "**新能源/储能**\n\n"
-            "郑希在2026年6月采访中指出继续看好「光通信、电力、新能源等偏通胀属性的品种」，"
-            "新能源板块经历供需格局出清后，龙头公司盈利底部或已确认。\n\n"
-        )
+    lines.append("**新能源/储能**")
+    lines.append("")
+    newenergy_line = pick_line(
+        newenergy_q,
+        kw_list=["新能源", "储能", "电力", "看好"],
+        fallback="郑希在2026年6月采访中指出继续看好「光通信、电力、新能源等偏通胀属性的品种」。",
+    )
+    lines.append(f"> {newenergy_line}")
+    lines.append("")
 
     # 老龙反抽板块分布
     if yypz_results:
@@ -396,11 +431,17 @@ def _section_holdings() -> str:
             "深南电路": "AI算力·PCB",
             "沪电股份": "AI算力·PCB",
             "寒武纪": "AI算力·AI芯片",
-            "鼎泰高科": "AI算力·工具",
+            "鼎泰高科": "AI算力·精密加工",
             "英维克": "AI算力·液冷",
+            "蓝特光学": "AI算力·光学元件",
             "宁德时代": "新能源·电池",
-            "立讯精密": "消费电子",
+            "立讯精密": "消费电子·精密制造",
             "生益科技": "电子·覆铜板",
+            "伟测科技": "半导体·测试",
+            "中微公司": "半导体·刻蚀设备",
+            "中科飞测": "半导体·检测设备",
+            "北方华创": "半导体·设备",
+            "中芯国际": "半导体·制造",
         }
         for k, v in mapping.items():
             if k in name:
