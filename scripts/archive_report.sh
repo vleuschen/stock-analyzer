@@ -1,33 +1,45 @@
 #!/usr/bin/env bash
 # 将最新日报复制到 reports/daily/YYYY/MM/ 并 commit
+# 支持：基础日报 + yyPZ + 郑希研报 + 完整合编
 set -euo pipefail
 
 DATE=$(date +%F)
 YEAR=$(date +%Y)
 MONTH=$(date +%m)
-SOURCE="reports/report_${DATE}.md"
 TARGET_DIR="reports/daily/${YEAR}/${MONTH}"
-TARGET="${TARGET_DIR}/report_${DATE}.md"
-
-# 检查源文件是否存在
-if [ ! -f "$SOURCE" ]; then
-    echo "⚠️ 日报文件不存在: $SOURCE，跳过归档"
-    exit 0
-fi
-
-# 创建目标目录
 mkdir -p "$TARGET_DIR"
 
-# 复制文件（如果内容不同）
-if [ -f "$TARGET" ] && cmp -s "$SOURCE" "$TARGET"; then
-    echo "⏭️ 日报 $DATE 已归档且无变化，跳过"
+# 要归档的报告类型
+REPORTS=(
+    "reports/report_${DATE}.md:report_${DATE}.md"
+    "reports/yypz_${DATE}.md:yypz_${DATE}.md"
+    "reports/zhengxi_${DATE}.md:zhengxi_${DATE}.md"
+    "reports/full_${DATE}.md:full_${DATE}.md"
+)
+
+HAS_NEW=false
+for ENTRY in "${REPORTS[@]}"; do
+    SRC="${ENTRY%%:*}"
+    DST="${ENTRY##*:}"
+    if [ -f "$SRC" ]; then
+        if [ ! -f "${TARGET_DIR}/${DST}" ] || ! cmp -s "$SRC" "${TARGET_DIR}/${DST}"; then
+            cp "$SRC" "${TARGET_DIR}/${DST}"
+            echo "✅ 已归档: $SRC"
+            HAS_NEW=true
+        else
+            echo "⏭️ 无变化: $SRC"
+        fi
+    else
+        echo "⚠️ 不存在: $SRC（跳过）"
+    fi
+done
+
+if [ "$HAS_NEW" = false ]; then
+    echo "⏭️ 无新内容，跳过提交"
     exit 0
 fi
 
-cp "$SOURCE" "$TARGET"
-echo "✅ 已归档: $SOURCE → $TARGET"
-
-# 配置 git（GitHub Actions 环境需要）
+# 配置 git
 git config user.name "stock-analyzer[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 

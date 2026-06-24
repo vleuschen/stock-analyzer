@@ -1,21 +1,24 @@
 # ============================================
-# A股自动分析 - GitHub Actions 定时任务
-# 每个交易日北京时间 16:00（UTC 08:00）运行
-# 零外部依赖，直接使用 Python 内置模块
+# A股全自动分析 - GitHub Actions 定时任务
+# 每个交易日两个时段推送：
+#   中午 12:00（午间收盘） UTC 04:00
+#   下午 18:00（收盘后）   UTC 10:00
+# 整合：基础技术分析 + yyPZ老龙反抽 + 郑希视角研报
 # ============================================
 
 name: Daily Stock Analysis
 
 on:
   schedule:
-    # UTC 08:00 = 北京时间 16:00
-    # 周一到周五运行（法定节假日需手动跳过）
-    - cron: '0 8 * * 1-5'
+    # UTC 04:00 = 北京时间 12:00（午间收盘）
+    - cron: '0 4 * * 1-5'
+    # UTC 10:00 = 北京时间 18:00（收盘后推送）
+    - cron: '0 10 * * 1-5'
 
-  # 支持手动触发（仓库页面 → Actions → Run workflow）
+  # 支持手动触发
   workflow_dispatch:
 
-  # 推送代码时也运行（用于调试）
+  # 推送代码时运行（用于调试）
   push:
     branches:
       - main
@@ -30,10 +33,10 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: 📥 拉取代码
+      - name: 📥 拉取代码（含 .claude/skills 中的郑希数据）
         uses: actions/checkout@v4
 
       - name: 🐍 设置 Python
@@ -41,18 +44,61 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 📊 运行分析
+      - name: 📊 运行全分析（基础分析 + yyPZ + 郑希研报）
+        id: analysis
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
-        run: python analyzer.py
+        run: python run_daily.py
 
-      - name: 📁 归档日报到仓库
+      - name: 📁 归档报告到仓库
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git
-          bash scripts/archive_report.sh
+          git config user.name "stock-analyzer[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          DATE=$(date +%F)
+          YEAR=$(date +%Y)
+          MONTH=$(date +%m)
+
+          # 创建归档目录
+          mkdir -p "reports/daily/${YEAR}/${MONTH}"
+
+          # 归档基础日报
+          if [ -f "reports/report_${DATE}.md" ]; then
+            cp "reports/report_${DATE}.md" "reports/daily/${YEAR}/${MONTH}/"
+            git add "reports/daily/${YEAR}/${MONTH}/report_${DATE}.md"
+          fi
+
+          # 归档 yyPZ 报告
+          if [ -f "reports/yypz_${DATE}.md" ]; then
+            cp "reports/yypz_${DATE}.md" "reports/daily/${YEAR}/${MONTH}/"
+            git add "reports/daily/${YEAR}/${MONTH}/yypz_${DATE}.md"
+          fi
+
+          # 归档郑希研报
+          if [ -f "reports/zhengxi_${DATE}.md" ]; then
+            cp "reports/zhengxi_${DATE}.md" "reports/daily/${YEAR}/${MONTH}/"
+            git add "reports/daily/${YEAR}/${MONTH}/zhengxi_${DATE}.md"
+          fi
+
+          # 归档完整合编
+          if [ -f "reports/full_${DATE}.md" ]; then
+            cp "reports/full_${DATE}.md" "reports/daily/${YEAR}/${MONTH}/"
+            git add "reports/daily/${YEAR}/${MONTH}/full_${DATE}.md"
+          fi
+
+          # 提交所有更改（包括新策略代码、配置变更等）
+          git add -A
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "⏭️ 无新内容可提交"
+          else
+            git commit -m "📁 归档日报 ${DATE}"
+            git push
+            echo "✅ 已推送到仓库"
+          fi
 
       - name: 💾 保存报告
         if: always()

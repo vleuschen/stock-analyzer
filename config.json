@@ -1,16 +1,15 @@
 {
   "stocks": [
     {"code": "002170", "name": "芭田股份", "market": "sz"},
-    {"code": "603885", "name": "吉祥航空", "market": "sh"},
     {"code": "002027", "name": "分众传媒", "market": "sz"},
     {"code": "600637", "name": "东方明珠", "market": "sh"},
     {"code": "300785", "name": "值得买",   "market": "sz"},
     {"code": "002264", "name": "新华都",   "market": "sz"},
     {"code": "002741", "name": "光华科技", "market": "sz"},
-    {"code": "601360", "name": "三六零", "market": "sh"},
     {"code": "002074", "name": "国轩高科", "market": "sz"},
-    {"code": "600141", "name": "兴发集团", "market": "sh"},
-    {"code": "603993", "name": "洛阳钼业", "market": "sh"}
+    {"code": "600977", "name": "中国电影", "market": "sh"},
+    {"code": "001230", "name": "劲旅环境", "market": "sz"},
+    {"code": "001380", "name": "华纬科技", "market": "sz"}
   ],
   "analysis": {
     "kline_days": 120

@@ -8,18 +8,13 @@ stocks:
     name: "芭田股份"
     market: "sz"       # sh=上海, sz=深圳, bj=北京
 
-  # 以下为示例，取消注释即可启用
-  # - code: "600519"
-  #   name: "贵州茅台"
-  #   market: "sh"
+  - code: "001230"
+    name: "劲旅环境"
+    market: "sz"
 
-  # - code: "300750"
-  #   name: "宁德时代"
-  #   market: "sz"
-
-  # - code: "000858"
-  #   name: "五粮液"
-  #   market: "sz"
+  - code: "001380"
+    name: "华纬科技"
+    market: "sz"
 
 # 分析参数
 analysis:

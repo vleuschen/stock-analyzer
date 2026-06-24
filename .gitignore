@@ -13,6 +13,9 @@ env/
 
 # 报告（仅忽略根目录的自动生成文件，归档和复盘需要提交）
 reports/report_*.md
+reports/yypz_*.md
+reports/zhengxi_*.md
+reports/full_*.md
 
 # 环境变量（可能包含敏感信息）
 .env
