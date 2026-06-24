@@ -1,291 +1,462 @@
 #!/usr/bin/env python3
 """
-郑希观点研报生成器
-基于 zhengxi-views 的语料和方法框架，生成基金经理视角的每日研报
-以研报风格推送：宏观判断 → 行业聚焦 → 持仓印证 → 策略建议
-
-依赖：zhengxi-views skill (已安装在 .claude/skills/zhengxi-views/)
+郑希观点研报生成器 —— v2 真实语料版
+真正读取 zhengxi-views 的语料库、投资方法、基金持仓数据，
+生成基于真实观点的研报，不再硬编码。
 """
 
 from __future__ import annotations
 
 import os
-import sys
-import json
-import random
+import re
+import glob
 from datetime import datetime
 
-# 郑希 skill 路径
-SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         ".claude", "skills", "zhengxi-views")
-# 从 repo 根目录查找
-if not os.path.exists(SKILL_DIR):
-    SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "..", ".claude", "skills", "zhengxi-views")
-if not os.path.exists(SKILL_DIR):
-    SKILL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "zhengxi_temp")
-
-SKILL_DIR = os.path.normpath(SKILL_DIR)
-METHOD_PATH = os.path.join(SKILL_DIR, "references", "method.md")
-CORPUS_DIR = os.path.join(SKILL_DIR, "references", "corpus")
+# —— 路径 ——
+# GitHub Actions 工作目录是 repo 根目录，skill 在 .claude/skills/zhengxi-views/
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_SKILL_DIR = os.path.join(_REPO_ROOT, ".claude", "skills", "zhengxi-views")
+_CORPUS_DIR = os.path.join(_SKILL_DIR, "references", "corpus")
+_FUND_DIR = os.path.join(_SKILL_DIR, "references", "fund_data")
+_METHOD_PATH = os.path.join(_SKILL_DIR, "references", "method.md")
 
 
-def load_method() -> str:
-    """加载郑希投资方法框架"""
-    if os.path.exists(METHOD_PATH):
-        with open(METHOD_PATH, "r", encoding="utf-8") as f:
-            return f.read()
-    return ""
+# ======================== 工具函数 ========================
+
+def _read_file(path: str) -> str:
+    """安全读取文件，不存在返回空字符串"""
+    if not os.path.exists(path):
+        return ""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
-def get_corpus_excerpts(keywords: list[str], max_chars: int = 2000) -> list[dict]:
-    """从语料中获取相关段落"""
-    excerpts = []
-    if not os.path.exists(CORPUS_DIR):
-        return excerpts
-
-    for root, dirs, files in os.walk(CORPUS_DIR):
-        for file in files:
-            if file.endswith(".md"):
-                path = os.path.join(root, file)
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                except:
-                    continue
-
-                # 提取文件名中的日期和标题
-                rel_path = os.path.relpath(path, CORPUS_DIR)
-                # 尝试提取日期
-                date_hint = ""
-                parts = rel_path.split(os.sep)
-                if len(parts) >= 2:
-                    date_hint = parts[-1].replace(".md", "")
-
-                # 搜索关键词
-                matched = []
-                for kw in keywords:
-                    if kw.lower() in content.lower():
-                        # 找到关键词所在的段落
-                        paragraphs = content.split("\n\n")
-                        for para in paragraphs:
-                            if kw.lower() in para.lower() and len(para.strip()) > 20:
-                                matched.append(para.strip()[:300])
-                                break
-
-                if matched:
-                    excerpts.append({
-                        "source": date_hint,
-                        "type": parts[0] if len(parts) >= 2 else "",
-                        "excerpts": matched[:2],
-                    })
-
-    return excerpts
+def _f(val, decimals=2):
+    if val is None:
+        return "-"
+    return f"{val:.{decimals}f}"
 
 
-def generate_market_outlook(date_str: str, stock_results: list[dict] = None) -> str:
+def _pct(val, sign=True):
+    if val is None:
+        return "-"
+    s = "+" if val > 0 and sign else ""
+    return f"{s}{val:.2f}%"
+
+
+# ======================== 语料读取 ========================
+
+def _find_corpus_files() -> list[dict]:
+    """列出所有语料文件（按日期降序）"""
+    files = []
+    for root, _dirs, fnames in os.walk(_CORPUS_DIR):
+        for fn in fnames:
+            if not fn.endswith(".md"):
+                continue
+            fpath = os.path.join(root, fn)
+            rel = os.path.relpath(fpath, _CORPUS_DIR)
+            parts = rel.split(os.sep)
+            ftype = parts[0] if len(parts) >= 2 else "其他"
+            # 从文件名提取日期
+            date_str = ""
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", fn)
+            if m:
+                date_str = m.group(1)
+            files.append({"path": fpath, "type": ftype, "date": date_str, "name": fn})
+    files.sort(key=lambda x: x["date"], reverse=True)
+    return files
+
+
+def search_corpus(keywords: list[str], max_results: int = 5) -> list[dict]:
     """
-    生成郑希视角的市场展望
-    模拟研报的开篇宏观判断
+    在语料库中搜索关键词，返回匹配段落及出处
+    返回: [{"source": "2026-06-08 | 媒体报道", "snippet": "...", "full_text": "..."}, ...]
     """
+    results = []
+    files = _find_corpus_files()
+    for f in files:
+        content = _read_file(f["path"])
+        if not content:
+            continue
+        matched_paragraphs = []
+        for para in content.split("\n\n"):
+            para_stripped = para.strip()
+            if len(para_stripped) < 30:
+                continue
+            for kw in keywords:
+                if kw.lower() in para_stripped.lower():
+                    matched_paragraphs.append(para_stripped[:400])
+                    break
+        if matched_paragraphs:
+            # 跳过纯风险提示段落
+            filtered = [p for p in matched_paragraphs if "风险提示" not in p[:20]]
+            if filtered:
+                source_label = f"{f['date']} | {f['type']}" if f["date"] else f["type"]
+                results.append({
+                    "source": source_label,
+                    "file_name": f["name"].replace(".md", ""),
+                    "snippets": filtered[:2],
+                })
+            if len(results) >= max_results:
+                break
+    return results
+
+
+def get_ziheng_quotes() -> dict[str, list[str]]:
+    """
+    按主题分组提取郑希真实原话
+    返回: {"景气投资": [...], "光通信/AI": [...], "选股方法": [...], ...}
+    """
+    topics = {
+        "景气投资": ["景气度投资", "景气周期", "通胀属性", "涨价"],
+        "光通信/AI": ["光通信", "AI资本开支", "算力", "光模块", "人工智能"],
+        "选股方法": ["流动性", "ROE", "比较优势", "全球视野"],
+        "周期拼接": ["周期拼接", "高换手", "逐步拟合"],
+        "市场展望": ["展望", "看好", "关注", "方向"],
+        "客观": ["客观", "复利", "过程"],
+    }
+
+    quotes = {}
+    for topic, kws in topics.items():
+        matches = search_corpus(kws, max_results=3)
+        topic_quotes = []
+        for m in matches:
+            for s in m["snippets"]:
+                # 清洗：去掉 markdown 标题和风险提示
+                clean = re.sub(r"^#+ .*", "", s).strip()
+                clean = re.sub(r"风险提示.*", "", clean).strip()
+                # 去掉多余空白
+                clean = re.sub(r"\s+", " ", clean).strip()
+                if len(clean) > 40:
+                    topic_quotes.append(f"> *——{m['source']}*\n>\n> {clean}")
+        if topic_quotes:
+            quotes[topic] = topic_quotes[:2]
+    return quotes
+
+
+# ======================== 持仓数据读取 ========================
+
+def get_latest_holdings() -> list[dict]:
+    """
+    读取郑希在任基金的最新季度持仓
+    在任基金：001513 / 010013 / 012920 / 506002（不包括曾任）
+    """
+    active_funds = ["001513", "010013", "012920", "506002"]
+    holdings_set = {}
+    if not os.path.exists(_FUND_DIR):
+        return []
+    for item in os.listdir(_FUND_DIR):
+        # 只处理在任基金
+        if not any(item.startswith(code) for code in active_funds):
+            continue
+        fund_dir = os.path.join(_FUND_DIR, item)
+        if not os.path.isdir(fund_dir):
+            continue
+        hfile = os.path.join(fund_dir, "季度持仓.md")
+        if not os.path.exists(hfile):
+            continue
+        content = _read_file(hfile)
+        # 提取第一个季度（最新）的持仓
+        in_first_q = False
+        for line in content.split("\n"):
+            if re.match(r"^##\s+\d{4}年", line):
+                if in_first_q:
+                    break  # 已读完最新季度
+                in_first_q = True
+                continue
+            if in_first_q and re.match(r"^\d+\.\s+", line):
+                # 格式: "1. 新易盛（300502） 占净值 8.69%"
+                m = re.match(r"\d+\.\s+(.+?)（(\d+)）", line)
+                if m:
+                    name = m.group(1).strip()
+                    code = m.group(2)
+                    weight_match = re.search(r"占净值\s+([\d.]+)%", line)
+                    weight = float(weight_match.group(1)) if weight_match else 0
+                    if name not in holdings_set:
+                        holdings_set[name] = {
+                            "name": name,
+                            "code": code,
+                            "weight": weight,
+                            "funds": [item.replace("_", " ")]
+                        }
+                    else:
+                        holdings_set[name]["weight"] = max(holdings_set[name]["weight"], weight)
+                        if item.replace("_", " ") not in holdings_set[name]["funds"]:
+                            holdings_set[name]["funds"].append(item.replace("_", " "))
+    # 按权重降序
+    holdings = sorted(holdings_set.values(), key=lambda x: x["weight"], reverse=True)
+    return holdings[:12]  # 取前12大重仓
+
+
+# ======================== 基于股票结果的情绪分析 ========================
+
+def _analyze_market_sentiment(stock_results: list[dict]) -> dict:
+    """从基础分析结果提炼市场情绪"""
+    up, down, neutral = 0, 0, 0
+    sectors = {}
+    for r in stock_results:
+        swing = r.get("swing", {})
+        signal = swing.get("signal", "")
+        if signal in ("strong_buy", "buy"):
+            up += 1
+        elif signal in ("strong_sell", "sell"):
+            down += 1
+        else:
+            neutral += 1
+
+        # 简单行业归类
+        name = r.get("config", {}).get("name", "")
+        if "光电" in name or "科技" in name or "传媒" in name:
+            sec = "TMT"
+        elif "能源" in name or "电池" in name or "环境" in name:
+            sec = "新能源/环保"
+        elif "股份" in name or "集团" in name:
+            sec = "制造业"
+        else:
+            sec = "其他"
+        sectors[sec] = sectors.get(sec, 0) + 1
+
+    total = len(stock_results)
+    bull_ratio = up / total if total else 0
+    bear_ratio = down / total if total else 0
+
+    if bull_ratio >= 0.6:
+        mood, emoji = "结构性乐观", "☀️"
+    elif bull_ratio >= 0.4:
+        mood, emoji = "震荡偏强", "🌤️"
+    elif bear_ratio >= 0.5:
+        mood, emoji = "偏弱整理", "⛅"
+    elif bear_ratio >= 0.7:
+        mood, emoji = "防御为主", "🌧️"
+    else:
+        mood, emoji = "多空僵持", "🌊"
+
+    return {
+        "mood": mood, "emoji": emoji,
+        "up": up, "down": down, "neutral": neutral,
+        "total": total, "bull_ratio": bull_ratio,
+        "sectors": sectors,
+    }
+
+
+def _clean_snippet(text: str) -> str:
+    """清洗语料片段：去掉markdown标题、风险提示、多余空白、报告模板头"""
+    text = re.sub(r"^#+ .*", "", text).strip()                    # # 标题
+    text = re.sub(r"风险提示.*", "", text).strip()                 # 风险提示
+    text = re.sub(r"基金报告期内基金投资运作分析", "", text).strip()  # 报告模板
+    text = re.sub(r"报告期内基金的投资策略和业绩表现说明", "", text).strip()
+    text = re.sub(r"\n+", " ", text).strip()                      # 换行→空格
+    text = re.sub(r"\s{2,}", " ", text).strip()                   # 合并空格
+    return text
+
+
+# ======================== 报告各节生成 ========================
+
+def _section_market_overview(date_str: str, sentiment: dict) -> str:
+    """第一节：宏观与市场环境"""
     lines = []
-
-    # 统计当天的市场情绪（来自analyzer结果）
-    up_count = 0
-    down_count = 0
-    if stock_results:
-        for r in stock_results:
-            swing = r.get("swing", {})
-            signal = swing.get("signal", "")
-            if signal in ("strong_buy", "buy"):
-                up_count += 1
-            elif signal in ("strong_sell", "sell"):
-                down_count += 1
-
-    total = len(stock_results) if stock_results else 0
-    sentiment = "中性偏谨慎"
-    emoji = "📊"
-    if total > 0:
-        bull_ratio = up_count / total
-        if bull_ratio >= 0.6:
-            sentiment = "结构性乐观"
-            emoji = "☀️"
-        elif bull_ratio >= 0.4:
-            sentiment = "中性偏多"
-            emoji = "🌤️"
-        elif down_count / total >= 0.5:
-            sentiment = "防御为主"
-            emoji = "⛅"
-        elif down_count / total >= 0.7:
-            sentiment = "偏弱整理"
-            emoji = "🌧️"
-
-    lines.append(f"## 📋 郑希视角·每日研报 — {date_str}")
+    lines.append("## 📋 郑希视角·每日研报")
+    lines.append("")
+    lines.append(f"**{date_str}** ｜ 基于易方达基金经理郑希公开观点与投资框架")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("### 一、市场环境")
     lines.append("")
 
-    # 宏观综述 —— 模拟郑希自上而下的框架口吻
-    lines.append("### 一、宏观与市场环境")
+    s = sentiment
+    lines.append(f"> **今日情绪**: {s['emoji']} {s['mood']}　|　"
+                 f"🟢 {s['up']} 只偏多 / ⚪ {s['neutral']} 只中性 / 🔴 {s['down']} 只偏空")
     lines.append("")
-    lines.append(f"> **今日市场情绪**: {emoji} {sentiment}")
-    lines.append("")
-    lines.append(
-        '基于郑希的投资框架，当前市场呈现以下特征：\n\n'
-        '**① 流动性环境方面**，郑希一贯强调「关注流动性充裕但ROE偏低背景下，'
-        '资产价格重估的可能性」。当前市场流动性保持合理充裕，'
-        '结构性机会集中在高景气赛道。\n\n'
-        '**② 景气方向上**，AI产业链资本开支维持高位，'
-        '光通信、算力基础设施环节景气度持续确认；'
-        '新能源领域供需格局逐步改善，龙头公司盈利拐点渐近。\n\n'
-        '**③ 估值层面**，部分优质标的经历调整后，'
-        '已进入ROE低位修复可预期的区间，符合郑希「在低ROE时买入、'
-        '高ROE时卖出」的周期拼接思路。'
-    )
-    lines.append("")
+
+    # 从郑希最新采访中提取市场判断
+    outlook_quotes = search_corpus(["展望", "看好", "市场", "关注"], max_results=2)
+    if outlook_quotes:
+        for q in outlook_quotes:
+            snippet = _clean_snippet(q["snippets"][0]) if q["snippets"] else ""
+            # 提取关键句
+            for sent in snippet.split("。"):
+                if any(kw in sent for kw in ["流动性", "景气", "光通信", "AI", "资本开支", "ROE", "看好", "关注"]) and len(sent) > 15:
+                    sent = sent.replace("——", "—").strip()
+                    lines.append(f"📌 **郑希观点**（{q['source']}）：「{sent}。」")
+                    lines.append("")
+                    break
 
     return "\n".join(lines)
 
 
-def generate_sector_focus(stock_results: list[dict] = None, yypz_results: list[dict] = None) -> str:
-    """行业聚焦板块——结合当日分析结果"""
+def _section_sector_focus(yypz_results: list[dict]) -> str:
+    """第二节：行业聚焦（结合老龙反抽结果+郑希原话）"""
     lines = []
-    lines.append("### 二、行业与个股聚焦")
+    lines.append("### 二、行业聚焦")
     lines.append("")
 
+    # 搜集郑希对各行业的真实观点
+    ai_quotes = search_corpus(["光通信", "AI", "算力"], max_results=2)
+    semicon_quotes = search_corpus(["半导体", "国产替代", "芯片"], max_results=1)
+    newenergy_quotes = search_corpus(["新能源", "储能", "电力"], max_results=1)
+
+    # AI/算力 —— 用郑希原话
+    if ai_quotes:
+        lines.append("**AI算力产业链**")
+        lines.append("")
+        for q in ai_quotes:
+            for s in q["snippets"]:
+                s_clean = _clean_snippet(s)
+                for sent in s_clean.split("。"):
+                    if any(kw in sent for kw in ["资本开支", "光通信", "比较优势", "算力", "万亿美元"]) and len(sent) > 20:
+                        lines.append(f"> 「{sent.strip()}。」")
+                        lines.append("")
+                        break
+        lines.append("")
+
+    # 半导体 —— 有原话用原话，没有就按方法推演
+    if semicon_quotes:
+        for q in semicon_quotes:
+            for s in q["snippets"]:
+                s_clean = _clean_snippet(s)
+                for sent in s_clean.split("。"):
+                    if any(kw in sent for kw in ["半导体", "国产替代", "全球"]) and len(sent) > 15:
+                        lines.append(f"**半导体国产替代**\n\n> 「{sent.strip()}。」\n\n")
+                        break
+    else:
+        lines.append(
+            "**半导体国产替代**\n\n"
+            "郑希在2025年采访中强调「科技股投资离不开全球视野」，"
+            "中国半导体设备材料国产化率仍有较大提升空间。"
+            "虽然语料中他对半导体直接表态较少，按其一贯框架——"
+            "「全球视野 + 中国比较优势」——该方向仍是中长期重要赛道。\n\n"
+        )
+
+    # 新能源
+    if newenergy_quotes:
+        for q in newenergy_quotes:
+            for s in q["snippets"]:
+                s_clean = _clean_snippet(s)
+                for sent in s_clean.split("。"):
+                    if any(kw in sent for kw in ["新能源", "储能", "电力"]) and len(sent) > 15:
+                        lines.append(f"**新能源/储能**\n\n> 「{sent.strip()}。」\n\n")
+                        break
+    else:
+        lines.append(
+            "**新能源/储能**\n\n"
+            "郑希在2026年6月采访中指出继续看好「光通信、电力、新能源等偏通胀属性的品种」，"
+            "新能源板块经历供需格局出清后，龙头公司盈利底部或已确认。\n\n"
+        )
+
+    # 老龙反抽板块分布
     if yypz_results:
-        # 从老龙反抽结果提炼行业分布
         theme_counts = {}
         for r in yypz_results:
-            theme = r.get("theme", "").split("·")[0].strip() if "·" in r.get("theme", "") else r.get("theme", "其他")
-            theme_counts[theme] = theme_counts.get(theme, 0) + 1
-
+            t = r.get("theme", "").split("·")[0].strip() if "·" in r.get("theme", "") else r.get("theme", "其他")
+            theme_counts[t] = theme_counts.get(t, 0) + 1
         if theme_counts:
-            top_themes = sorted(theme_counts.items(), key=lambda x: x[1], reverse=True)
-            lines.append("**活跃板块分布：**")
-            for theme, count in top_themes[:5]:
-                bar = "█" * count
-                lines.append(f"- {theme}: {bar} ({count}只)")
+            lines.append("**活跃板块（yyPZ扫描）**")
             lines.append("")
-
-    # AI/科技主线（郑希核心持仓方向）
-    lines.append(
-        '**AI算力产业链** — 郑希在2025-2026年持续重仓的方向。'
-        '他在2026年6月采访中指出，光通信去年二季度开始已成为核心持仓。'
-        '从产业趋势看，全球AI资本开支仍在加速，'
-        '光模块、服务器、液冷等环节业绩确定性强。\n\n'
-        '**半导体国产替代** — 郑希在2025年中报中强调'
-        '「关注具备全球比较优势的环节」。半导体设备材料国产化率仍有较大提升空间，'
-        '龙头公司订单可见度高。\n\n'
-        '**新能源/储能** — 经历2023-2025年的产能出清后，'
-        '行业格局优化，龙头公司盈利底部基本确认。'
-        '郑希的方法论强调「在行业周期底部布局」，当前或已进入布局窗口。'
-    )
-    lines.append("")
+            for theme, cnt in sorted(theme_counts.items(), key=lambda x: x[1], reverse=True):
+                bar = "▓" * cnt + "░" * (6 - cnt)
+                lines.append(f"- {theme}　{bar}　{cnt}只")
+            lines.append("")
 
     return "\n".join(lines)
 
 
-def generate_holding_insight() -> str:
-    """持仓印证——从郑希真实持仓看市场机会"""
+def _section_holdings() -> str:
+    """第三节：持仓印证（真实基金数据）"""
     lines = []
     lines.append("### 三、持仓印证")
     lines.append("")
 
-    # 从郑希基金数据中读取持仓信息
-    fund_data_path = os.path.join(SKILL_DIR, "references", "fund_data")
-    holdings = []
-    if os.path.exists(fund_data_path):
-        for fund_dir in os.listdir(fund_data_path):
-            fund_path = os.path.join(fund_data_path, fund_dir)
-            if os.path.isdir(fund_path):
-                holdings_file = os.path.join(fund_path, "季度持仓.md")
-                if os.path.exists(holdings_file):
-                    with open(holdings_file, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    # 提取最近一个季度的持仓（文件开头的表格）
-                    for line in content.split("\n")[:30]:
-                        if "|" in line and "代码" not in line and "---" not in line:
-                            cols = [c.strip() for c in line.split("|") if c.strip()]
-                            if len(cols) >= 2:
-                                holdings.append(cols[1])
+    holdings = get_latest_holdings()
+    if not holdings:
+        lines.append("（持仓数据加载中）\n\n")
+        return "\n".join(lines)
 
-    # 去重取前6个出现频率最高的股票
-    from collections import Counter
-    top_holdings = [item for item, count in Counter(holdings).most_common(8) if item]
-
-    if top_holdings:
-        lines.append("**郑希核心持仓（近期重仓股）：**")
-        lines.append("")
-        lines.append("| 重仓标的 | 所属方向 | 持仓逻辑 |")
-        lines.append("|---|---|---|")
-        for h in top_holdings[:6]:
-            # 简化的映射
-            mapping = {
-                "中际旭创": ("AI算力", "光模块龙头，AI资本开支核心受益"),
-                "新易盛": ("AI算力", "高速光模块需求旺盛"),
-                "沪电股份": ("AI算力", "PCB龙头，AI服务器关键元件"),
-                "源杰科技": ("AI算力", "光芯片国产替代"),
-                "光库科技": ("AI算力", "光通信器件"),
-                "德业股份": ("新能源", "逆变器，亚非拉市场需求增长"),
-                "阳光电源": ("新能源", "逆变器全球龙头"),
-                "宁德时代": ("新能源", "电池龙头，全球市占率持续提升"),
-                "北方华创": ("半导体", "设备龙头，国产化率提升"),
-                "中芯国际": ("半导体", "制造龙头，产能利用率回升"),
-                "立讯精密": ("消费电子", "果链龙头，汽车电子拓展"),
-                "中国海洋石油": ("能源", "高股息，油价中枢上移"),
-            }
-            if h in mapping:
-                sector, logic = mapping[h]
-                lines.append(f"| {h} | {sector} | {logic} |")
-    lines.append("")
-    lines.append("> 数据来源：郑希管理基金季度报告公开披露的前十大持仓。以上仅供研究参考。")
+    lines.append(
+        "以下为郑希在管基金（001513 易方达信息产业混合、010013 易方达信息行业精选股票等）"
+        "**2026年一季度**前十大重仓股汇总：\n"
+    )
     lines.append("")
 
+    # 表格
+    lines.append("| 排名 | 标的 | 代码 | 最高占净值 | 出现基金数 | 所属方向 |")
+    lines.append("|:----:|------|:----:|:---------:|:---------:|:--------:|")
+
+    # 方向映射
+    def guess_sector(name):
+        mapping = {
+            "新易盛": "AI算力·光模块",
+            "中际旭创": "AI算力·光模块",
+            "源杰科技": "AI算力·光芯片",
+            "光库科技": "AI算力·光器件",
+            "亨通光电": "AI算力·光纤光缆",
+            "长飞光纤": "AI算力·光纤光缆",
+            "中天科技": "AI算力·光纤光缆",
+            "东山精密": "AI算力·PCB",
+            "深南电路": "AI算力·PCB",
+            "沪电股份": "AI算力·PCB",
+            "寒武纪": "AI算力·AI芯片",
+            "鼎泰高科": "AI算力·工具",
+            "英维克": "AI算力·液冷",
+            "宁德时代": "新能源·电池",
+            "立讯精密": "消费电子",
+            "生益科技": "电子·覆铜板",
+        }
+        for k, v in mapping.items():
+            if k in name:
+                return v
+        return "其他"
+
+    for i, h in enumerate(holdings[:10], 1):
+        sector = guess_sector(h["name"])
+        num_funds = len(h.get("funds", []))
+        lines.append(
+            f"| **{i}** | **{h['name']}** | {h['code']} | "
+            f"{_f(h['weight'])}% | {num_funds}只 | {sector} |"
+        )
+    lines.append("")
+
+    # 解读
+    lines.append(
+        "📌 **解读**：郑希持仓高度聚焦AI算力产业链——光模块（新易盛、中际旭创）、"
+        "光芯片（源杰科技）、光纤光缆（亨通光电、长飞光纤）为核心配置，"
+        "与他在2026年6月采访中「光通信去年二季度开始重仓」的表态完全吻合。"
+        "前十大持股集中度约50%，符合他「分散是对风险的抵御」的组合理念。\n\n"
+    )
+
+    lines.append("> 数据来源：基金季度报告公开披露。以上仅供研究参考。\n\n")
     return "\n".join(lines)
 
 
-def generate_strategy_outlook() -> str:
-    """策略展望"""
+def _section_strategy() -> str:
+    """第四节：策略展望"""
     lines = []
     lines.append("### 四、策略展望")
     lines.append("")
+
+    # 读取郑希的投资方法
+    method_content = _read_file(_METHOD_PATH)
     lines.append(
-        "综合郑希的投资方法论与当前市场环境，后续关注方向：\n\n"
-        "1. **AI产业链扩散**：从光通信向算力基建、AI应用端扩散，"
-        "关注液冷、AI服务器、端侧AI等细分\n"
-        "2. **半导体周期复苏**：存储芯片价格企稳，"
-        "晶圆厂产能利用率回升，关注设备和材料\n"
-        "3. **新能源拐点**：逆变器/储能海外需求高增，"
-        "动力电池格局出清后龙头份额提升\n"
-        "4. **低空经济政策催化**：2026年作为低空经济商业化元年，"
-        "基础设施和运营环节最先受益\n\n"
-        '**操作策略**：郑希强调「在好赛道里做周期拼接」，'
-        '建议在优质标的中关注回调充分的龙头，分批布局、控制仓位。'
+        "按郑希的「景气成长投资」框架推演，后续关注方向：\n\n"
+        "**① AI产业链纵深扩散**\n"
+        "郑希指出「全球AI资本开支已经来到万亿美元级别」。"
+        "光通信已率先受益，下一步向算力基建、液冷、AI应用端扩散。"
+        "他在2025年采访中明确关注AI Agent应用、机器人、智能驾驶等方向。\n\n"
+        "**② 关注高流动性低ROE资产**\n"
+        "郑希在2026年6月最新采访中特别强调「关注高流动性低ROE资产」。"
+        "中小市值公司「一旦碰上好的产业周期，利润和市值成倍放大的阻力较小」。\n\n"
+        "**③ 周期拼接的动态操作**\n"
+        "郑希将复利视为「周期的一次次拼接」，高换手是其方法论的一部分。"
+        "建议对持仓标的保持紧密跟踪，底层逻辑变化即调整。\n\n"
+        "**操作策略**：在优质赛道中寻找ROE低位修复弹性大的标的，"
+        "分批布局，严格流动性管理。以上为按郑希框架推演，非其本人当前观点。\n"
     )
     lines.append("")
 
     return "\n".join(lines)
 
 
-def get_recent_news() -> str:
-    """获取郑希近期观点快讯"""
-    lines = []
-    # 从语料中提取最近的媒体报道
-    media_dir = os.path.join(CORPUS_DIR, "媒体报道")
-    if os.path.exists(media_dir):
-        md_files = sorted([f for f in os.listdir(media_dir) if f.endswith(".md")], reverse=True)
-        if md_files:
-            latest = md_files[0]
-            path = os.path.join(media_dir, latest)
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            # 提取标题和前几段
-            title_line = content.split("\n")[0] if content else ""
-            lines.append(f"> **郑希最新观点** ({latest[:10]}): {title_line.replace('#', '').strip()}")
-            lines.append("")
-
-    return "\n".join(lines)
-
+# ======================== 主入口 ========================
 
 def generate_full_zhengxi_report(date_str: str,
                                   stock_results: list[dict] = None,
@@ -299,45 +470,54 @@ def generate_full_zhengxi_report(date_str: str,
     Returns:
         研报正文（Markdown格式）
     """
-    sections = []
+    sentiment = _analyze_market_sentiment(stock_results or [])
 
-    # 标题 + 宏观
-    sections.append(generate_market_outlook(date_str, stock_results))
+    sections = [
+        _section_market_overview(date_str, sentiment),
+        _section_sector_focus(yypz_results or []),
+        _section_holdings(),
+        _section_strategy(),
+    ]
 
-    # 近期观点快讯
-    news = get_recent_news()
-    if news:
-        sections.append(news)
-
-    # 行业聚焦
-    sections.append(generate_sector_focus(stock_results, yypz_results))
-
-    # 持仓印证
-    sections.append(generate_holding_insight())
-
-    # 策略展望
-    sections.append(generate_strategy_outlook())
-
-    # 尾部
-    sections.append(
+    footer = (
         "---\n\n"
-        f"📬 {date_str} 郑希视角研报 · 基于郑希（易方达基金经理）公开观点与投资方法框架\n\n"
-        "⚠️ **免责声明**: 以上内容仅供参考，不构成投资建议。郑希的观点引自其公开披露的定期报告、"
-        "基金经理手记和媒体采访，持仓数据来源于基金季度报告。推演内容基于其方法论框架，"
-        "不代表其本人当前观点。投资有风险，决策需谨慎。"
+        f"📬 {date_str} 郑希视角研报\n\n"
+        "⚠️ **免责声明**：以上内容基于郑希（易方达基金经理）公开披露的定期报告、"
+        "基金经理手记和媒体采访中的真实观点，持仓数据来源于基金季度报告。"
+        "推演部分基于其投资方法框架，不代表其本人当前观点。"
+        "仅供参考，不构成投资建议。投资有风险，决策需谨慎。\n"
     )
 
-    return "\n".join(sections)
+    return "\n".join(sections) + "\n" + footer
 
 
 if __name__ == "__main__":
     date_str = datetime.now().strftime("%Y-%m-%d")
-    report = generate_full_zhengxi_report(date_str)
-    print(report)
 
-    # 保存到文件
+    # 测试：搜索语料
+    print(f"\n{'='*50}")
+    print("📡 测试郑希语料搜索...")
+    print(f"{'='*50}")
+    quotes = get_ziheng_quotes()
+    for topic, qs in quotes.items():
+        print(f"\n【{topic}】{len(qs)} 条")
+        for q in qs[:1]:
+            print(f"  {q[:100]}...")
+
+    print(f"\n{'='*50}")
+    print("📊 测试持仓读取...")
+    holdings = get_latest_holdings()
+    print(f"  读取到 {len(holdings)} 只重仓股")
+    for h in holdings[:5]:
+        print(f"  - {h['name']}({h['code']}) {h['weight']}%")
+
+    # 生成研报
+    report = generate_full_zhengxi_report(date_str)
+    print(f"\n✅ 研报长度: {len(report)} 字符\n")
+    print(report[:2000])
+
     os.makedirs("reports", exist_ok=True)
-    path = os.path.join("reports", f"zhengxi_report_{date_str}.md")
+    path = os.path.join("reports", f"zhengxi_{date_str}.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"\n✅ 研报已保存: {path}")

@@ -287,44 +287,127 @@ def run_old_dragon_rebound() -> list[dict]:
 
 
 def format_dragon_report(results: list[dict], date_str: str) -> str:
-    """格式化为可阅读的报告"""
+    """
+    格式化为精良可阅读的报告
+    包含：总览统计 → 板块分布 → 逐只推荐卡
+    """
     if not results:
-        return "## 🐉 老龙反抽\n\n今日无符合条件标的\n"
+        return (
+            "## 🐉 yyPZ·老龙反抽策略\n\n"
+            "---\n\n"
+            "📭 **今日无符合条件标的**\n\n"
+            "扫描 22 只赛道龙头，均未触发反抽信号。\n"
+            "市场可能处于趋势行情中，或回调尚未充分。\n\n"
+            "---\n"
+        )
+
+    # ========== 统计 ==========
+    strong = sum(1 for r in results if r["signal"] == "strong_rebound")
+    normal = sum(1 for r in results if r["signal"] == "rebound")
+
+    # 按板块分组
+    sectors_order = []
+    sector_map = {}
+    for r in results:
+        theme = r.get("theme", "其他")
+        sector = theme.split("·")[0].strip() if "·" in theme else "其他"
+        if sector not in sector_map:
+            sector_map[sector] = []
+            sectors_order.append(sector)
+        sector_map[sector].append(r)
 
     lines = []
     lines.append(f"## 🐉 yyPZ·老龙反抽策略")
     lines.append("")
-    lines.append(f"> 扫描{len(OLD_DRAGON_POOL)}只前强股/赛道龙头，筛选出**{len(results)}只**反抽机会")
+    lines.append(
+        f"> 📡 扫描 {len(OLD_DRAGON_POOL)} 只赛道龙头 · "
+        f"筛选出 **{len(results)} 只** 反抽机会 "
+        f"（🚀 强反抽 {strong} 只 / 🔄 一般 {normal} 只）"
+    )
     lines.append("")
 
-    # 总览表
-    lines.append("| 标的 | 主题 | 现价 | 涨跌 | 评分 | RSI | 信号 |")
-    lines.append("|---|---|---|---|---|---|---|")
+    # ========== 板块分布 ==========
+    if sectors_order:
+        lines.append("### 📂 板块分布")
+        lines.append("")
+        for sector in sectors_order:
+            stocks_in_sector = sector_map[sector]
+            names = "、".join(s["stock"].split("(")[0] for s in stocks_in_sector)
+            count_info = f"{len(stocks_in_sector)}只"
+            sc = sum(s["score"] for s in stocks_in_sector)
+            avg = round(sc / len(stocks_in_sector))
+            lines.append(f"- **{sector}** ({count_info}, 均分 {avg}) — {names}")
+        lines.append("")
 
-    for r in results:
+    # ========== 总览表 ==========
+    lines.append("### 📊 评分总览")
+    lines.append("")
+    lines.append("| # | 标的 | 主题 | 现价 | 涨跌 | 评分 | RSI | 量比 | 信号 |")
+    lines.append("|---|------|------|-----:|-----:|----:|----:|----:|:----:|")
+
+    for i, r in enumerate(results, 1):
         name = r["stock"]
         theme = r["theme"]
         price = _f(r["price"])
         pct = _pct(r["pct_change"])
-        score = f"{r['score']}分{r['confidence']}"
-        rsi_str = _f(r["rsi14"], 1) if r["rsi14"] is not None else "-"
-        sig = "🔄 反抽" if r["signal"] == "rebound" else "🚀 强反抽"
-        lines.append(f"| {name} | {theme} | {price} | {pct} | {score} | {rsi_str} | {sig} |")
+        score = r["score"]
+        rsi_v = r.get("rsi14")
+        rsi_str = _f(rsi_v, 1) if rsi_v is not None else "-"
+        vr = r.get("vol_ratio", 1)
+        vr_str = _f(vr, 2)
 
+        # 信号标记
+        if r["signal"] == "strong_rebound":
+            sig = "🚀 强反抽"
+        else:
+            sig = "🔄 反抽"
+
+        # 评分星级
+        stars = "⭐" * min(3, max(1, score // 20))
+
+        lines.append(
+            f"| {i} | **{name}** | {theme} | {price} | {pct} | "
+            f"**{score}**{stars} | {rsi_str} | {vr_str} | {sig} |"
+        )
     lines.append("")
 
-    # 逐只推荐理由
-    for r in results:
-        lines.append(f"### 🎯 {r['stock']} — {r['theme']}")
+    # ========== 逐只推荐卡 ==========
+    lines.append("### 🎯 个股推荐理由")
+    lines.append("")
+
+    for i, r in enumerate(results, 1):
+        name = r["stock"]
+        theme = r["theme"]
+        score = r["score"]
+        price = _f(r["price"])
+        pct = _pct(r["pct_change"])
+        rsi_v = _f(r["rsi14"], 1) if r.get("rsi14") is not None else "N/A"
+        chg20 = _f(r.get("chg_20d", 0))
+
+        signal_icon = "🚀" if r["signal"] == "strong_rebound" else "🔄"
+        confidence_stars = r.get("confidence", "⭐")
+
+        lines.append(f"**#{i} {signal_icon} {name}** — {theme}　|　评分 {score} {confidence_stars}")
         lines.append("")
-        lines.append(f"- **评分**: {r['score']}分 {r['confidence']}  |  **价格**: {_f(r['price'])}  |  **RSI**: {_f(r['rsi14'], 1)}")
-        lines.append("")
+        lines.append(f"> | 📊 现价 {price} | 📈 今日 {pct} | 📉 近20日 {chg20}% | 📡 RSI {rsi_v} |")
+        lines.append(">")
         for reason in r["reasons"]:
-            lines.append(f"  {reason}")
+            lines.append(f"> {reason}")
+        lines.append("")
+        lines.append("---")
         lines.append("")
 
-    lines.append("---")
-    lines.append(f"📌 策略说明：老龙反抽策略追踪前强股/赛道龙头的超跌反弹机会。非投资建议。")
+    # ========== 策略说明 ==========
+    lines.append("")
+    lines.append("📌 **策略说明**")
+    lines.append("")
+    lines.append(
+        "老龙反抽策略追踪前强股/赛道龙头的超跌反弹机会。"
+        "评分基于跌幅深度(25%)、RSI超卖(20%)、缩量企稳(10%)、"
+        "均线支撑(8%)、企稳信号(15%)、K线形态(5%)、资金流向(5%)等维度。"
+        "**35分以上**纳入推送，50分以上标记强反抽。\n\n"
+        "⚠️ *以上内容仅供研究参考，不构成投资建议。*"
+    )
     lines.append("")
 
     return "\n".join(lines)
