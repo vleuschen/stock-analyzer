@@ -38,7 +38,7 @@
 - 数据来源：郑希公开语料（2012-2026）+ 基金真实持仓
 
 ## GitHub Actions
-- `daily-analysis.yml` — 每日两推（12:00 UTC+8 / 18:00 UTC+8）
+- `daily-analysis.yml` — 每日一推（18:00 UTC+8 收盘后）
 - `weekly-review.yml` — 每周六 10:00 UTC+8
 
 ## 环境变量
