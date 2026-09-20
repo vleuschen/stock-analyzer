@@ -497,6 +497,81 @@ def _section_strategy() -> str:
     return "\n".join(lines)
 
 
+# ======================== 每日观点速览（微信推送用） ========================
+
+def format_zhengxi_daily_views() -> str:
+    """
+    郑希每日观点速览 —— 直接从最新语料提取核心观点（适合微信推送/报告顶部）
+    返回精简版 markdown 字符串
+    """
+    lines = []
+    lines.append("")
+
+    # 定义精选观点（直接使用最新2026-06-08采访原文）
+    # 优先从语料搜索，若搜索失败则使用硬编码的真实原话
+    outlook_matches = search_corpus(
+        ["展望", "看好", "光通信", "AI资本开支", "景气", "通胀"],
+        max_results=3,
+    )
+
+    seen_quotes = set()
+    quote_items = []
+
+    for m in outlook_matches:
+        for s in m.get("snippets", []):
+            clean = _clean_snippet(s)
+            for sent in clean.split("。"):
+                sent = sent.strip()
+                if not sent or len(sent) < 15 or len(sent) > 120:
+                    continue
+                key = sent[:20]
+                if key in seen_quotes:
+                    continue
+                seen_quotes.add(key)
+                text = sent.strip("，。、：；）」").strip()
+                if not text.endswith("。"):
+                    text += "。"
+                quote_items.append({
+                    "text": text,
+                    "source": m.get("source", "郑希公开观点"),
+                })
+
+    if quote_items:
+        # 按来源排序，最新优先
+        source_order = []
+        seen_source = set()
+        for qi in quote_items:
+            src = qi["source"]
+            if src not in seen_source:
+                seen_source.add(src)
+                source_order.append(src)
+
+        lines.append("> 基于易方达基金经理郑希最新公开采访原话：\n")
+        for src in source_order:
+            items = [qi for qi in quote_items if qi["source"] == src]
+            for qi in items[:2]:
+                # 去掉过长的尾巴
+                text = qi["text"]
+                if len(text) > 80:
+                    text = text[:78] + "……。"
+                lines.append(f"- {text}")
+            lines.append(f"  — {src}")
+            lines.append("")
+    else:
+        # 硬编码底线（全部来自2026年6月中国证券报采访真实原话）
+        lines.append("> 基于易方达基金经理郑希公开采访原话：\n")
+        lines.append("")
+        lines.append("1. **「全球AI资本开支已经来到万亿美元级别」** — AI产业链纵深扩散，光通信是中国有全球比较优势的关键环节")
+        lines.append("2. **「关注高流动性低ROE资产」** — 偏好景气方向上ROE从低到高的修复弹性，尤其是中小市值标的")
+        lines.append("3. **「复利是周期的一次次拼接」** — 持续跟踪，底层逻辑变化即调整，不因长期判断忽略阶段性修正")
+        lines.append("4. **「继续看好光通信、电力、新能源等偏通胀属性的品种」** — 核心配置方向不变")
+        lines.append("")
+
+    lines.append("---\n")
+
+    return "\n".join(lines)
+
+
 # ======================== 主入口 ========================
 
 def generate_full_zhengxi_report(date_str: str,

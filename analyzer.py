@@ -100,6 +100,8 @@ def analyze_stock(stock_config: dict, kline_days: int = 120) -> dict:
         "indicators": indicators,
         "swing": swing,
         "money_flow": money_flow,
+        "flow_summary": stock_data.get("flow_summary", {}),
+        "data_date": stock_data.get("data_date", ""),
     }
 
 

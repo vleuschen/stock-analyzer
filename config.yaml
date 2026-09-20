@@ -16,6 +16,18 @@ stocks:
     name: "华纬科技"
     market: "sz"
 
+  - code: "002714"
+    name: "牧原股份"
+    market: "sz"
+
+  - code: "002842"
+    name: "翔鹭钨业"
+    market: "sz"
+
+  - code: "603928"
+    name: "兴业股份"
+    market: "sh"
+
 # 分析参数
 analysis:
   kline_days: 120        # 获取最近N天K线数据（用于计算MA60等长周期指标）

@@ -11,7 +11,7 @@ import math
 import time
 from datetime import datetime
 
-from data_fetcher import fetch_stock_data
+from data_fetcher import fetch_stock_data, flow_main, flow_label
 
 
 # ============================================================
@@ -219,16 +219,26 @@ def analyze_dragon_rebound(stock: dict) -> dict | None:
             score += 5
             reasons.append("⭐ 昨日出现十字星，止跌信号")
 
-    # 7. 主力资金动向
-    main_net = quote.get("main_net", 0)
-    if main_net > 0:
-        score += 5
-        reasons.append(f"💰 主力资金净流入{_fmt_amt(main_net)}")
+    # 7. 主力资金动向（东方财富真实主力净额）
+    money_flow = data.get("money_flow") or []
+    if money_flow:
+        main_net = flow_main(money_flow[0])
+        label = flow_label(money_flow[0])
+        sum5 = sum(flow_main(r) for r in money_flow[:5])
+        if main_net > 0:
+            score += 5
+            reasons.append(f"💰 {label}净流入{_fmt_amt(main_net)}")
+            if sum5 > 0:
+                score += 3
+                reasons.append("💰 近5日资金累计净流入")
+        elif main_net < 0:
+            score -= 5
+            reasons.append(f"💸 {label}净流出{_fmt_amt(abs(main_net))}")
 
     # 标记是否为强势反抽机会
-    if score >= 35:
-        confidence = "⭐⭐⭐" if score >= 50 else "⭐⭐"
-        signal = "strong_rebound" if score >= 50 else "rebound"
+    if score >= 52:
+        confidence = "⭐⭐⭐" if score >= 68 else "⭐⭐"
+        signal = "strong_rebound" if score >= 68 else "rebound"
     else:
         return None  # 分数不够，不纳入推送
 
@@ -405,7 +415,7 @@ def format_dragon_report(results: list[dict], date_str: str) -> str:
         "老龙反抽策略追踪前强股/赛道龙头的超跌反弹机会。"
         "评分基于跌幅深度(25%)、RSI超卖(20%)、缩量企稳(10%)、"
         "均线支撑(8%)、企稳信号(15%)、K线形态(5%)、资金流向(5%)等维度。"
-        "**35分以上**纳入推送，50分以上标记强反抽。\n\n"
+        "**52分以上**纳入推送，68分以上标记强反抽。\n\n"
         "⚠️ *以上内容仅供研究参考，不构成投资建议。*"
     )
     lines.append("")

@@ -54,6 +54,28 @@ def _signal_mark(signal):
     return marks.get(signal, "❓")
 
 
+def _flow_net(flow_list):
+    """
+    取最新一天的资金净额。
+    东财口径为「主力净额」，新浪兜底口径为「超大单净额」；
+    无数据或字段缺失时返回 0，避免 None 参与比较报错。
+    """
+    if not flow_list:
+        return 0.0
+    row = flow_list[0]
+    value = row.get("main_net")
+    if value is None:
+        value = row.get("super_net")
+    return value or 0.0
+
+
+def _flow_label(flow_list) -> str:
+    """资金口径名称：东财为「主力」，新浪备用口径为「超大单」"""
+    if not flow_list:
+        return "主力"
+    return "主力" if flow_list[0].get("main_net") is not None else "超大单"
+
+
 def _collect_highlights(results: list) -> list:
     """从所有股票中收集值得关注的亮点，带 emoji"""
     highlights = []
@@ -114,11 +136,12 @@ def _collect_highlights(results: list) -> list:
         # 主力资金大幅流入/流出
         money_flow = r.get("money_flow", [])
         if money_flow:
-            main_net = money_flow[0].get("main_net", 0)
+            main_net = _flow_net(money_flow)
+            flow_label = _flow_label(money_flow)
             if main_net > 1e8:  # 超过1亿
-                highlights.append(f"💰 {name} 主力净流入 {_amt(main_net)}")
+                highlights.append(f"💰 {name} {flow_label}净流入 {_amt(main_net)}")
             elif main_net < -1e8:
-                highlights.append(f"💸 {name} 主力净流出 {_amt(abs(main_net))}")
+                highlights.append(f"💸 {name} {flow_label}净流出 {_amt(abs(main_net))}")
 
     return highlights
 
@@ -253,8 +276,9 @@ def format_stock_brief(r: dict) -> str:
     money_flow = r.get("money_flow", [])
     if money_flow:
         mf = money_flow[0]
-        main_net = mf.get("main_net", 0)
-        small_net = mf.get("small_net", 0)
+        main_net = _flow_net(money_flow)
+        small_net = mf.get("small_net") or 0
+        flow_label = _flow_label(money_flow)
 
         if main_net > 0:
             mf_emoji = "🟢"
@@ -263,7 +287,7 @@ def format_stock_brief(r: dict) -> str:
             mf_emoji = "🔴"
             mf_dir = "净流出"
 
-        mf_parts = [f"{mf_emoji}主力{mf_dir} {_amt(abs(main_net))}"]
+        mf_parts = [f"{mf_emoji}{flow_label}{mf_dir} {_amt(abs(main_net))}"]
         if small_net > 0:
             mf_parts.append(f"小单+{_amt(small_net)}")
         elif small_net < 0:
@@ -297,6 +321,195 @@ def format_stock_brief(r: dict) -> str:
     return "\n".join(lines)
 
 
+_SCREENING_TEMPLATE = """## 🔍 每日选股筛选
+
+{summary}
+
+### 📌 满足条件的标的
+
+| 标的 | 触发条件 | 今日涨跌 | 信号 |
+|---|---|---|---|
+{table}
+
+### 📊 多条件综合评分 Top
+
+{top_picks}
+
+---
+
+"""
+
+
+def _get_screening_conditions(r: dict) -> tuple[list[str], int]:
+    """
+    检查单只股票触发了哪些选股条件
+    返回: (conditions_list, score)
+    """
+    ind = r.get("indicators", {})
+    swing = r.get("swing", {})
+    quote = r.get("quote", {})
+    name = r.get("config", {}).get("name", "")
+    conditions = []
+    score = 0
+
+    macd = ind.get("macd", {})
+    rsi14 = ind.get("rsi", {}).get("rsi14")
+    ma_align = ind.get("ma_alignment", "")
+    vol_ratio = ind.get("volume_ratio", 1)
+    boll_pos = ind.get("bollinger", {}).get("position", 50)
+    chg_5d = ind.get("price_changes", {}).get("5d", 0)
+    signal = swing.get("signal", "")
+
+    # MACD 金叉 (权重最高)
+    if macd.get("is_golden_cross"):
+        conditions.append("🟢 MACD金叉")
+        score += 5
+
+    # MACD 多头运行
+    if macd.get("dif", 0) > macd.get("dea", 0) and signal in ("strong_buy", "buy"):
+        conditions.append("📈 MACD多头+偏多信号")
+        score += 3
+
+    # RSI 超卖 (RSI < 30)
+    if rsi14 is not None and rsi14 < 30:
+        conditions.append(f"📉 RSI超卖({rsi14:.0f})")
+        score += 3
+
+    # RSI 超买 (RSI > 70)
+    if rsi14 is not None and rsi14 > 70:
+        conditions.append(f"📈 RSI超买({rsi14:.0f})")
+        score += 2
+
+    # 放量突破 (量比 > 1.5 + 站上MA10)
+    if vol_ratio > 1.5:
+        ma_pos = ind.get("ma_positions", {})
+        if ma_pos.get("ma10") == "above":
+            conditions.append(f"💥 放量突破MA10(量比{vol_ratio:.1f})")
+            score += 4
+
+    # 均线多头排列
+    if ma_align == "bullish":
+        conditions.append("🌱 均线多头排列")
+        score += 4
+
+    # 布林带超跌 (触及下轨)
+    if boll_pos < 15:
+        conditions.append(f"🛡️ 布林超跌(位置{boll_pos:.0f}%)")
+        score += 2
+
+    # 布林带强势 (触及上轨)
+    if boll_pos > 85:
+        conditions.append(f"🔥 布林强势(位置{boll_pos:.0f}%)")
+        score += 2
+
+    # 近5日急跌超10% (潜在反弹)
+    if chg_5d < -10:
+        conditions.append(f"🎢 近5日急跌{chg_5d:.0f}%")
+        score += 2
+
+    # 主力资金大幅流入
+    money_flow = r.get("money_flow", [])
+    if money_flow:
+        main_net = _flow_net(money_flow)
+        if main_net > 50000000:  # >5000万
+            conditions.append("💰 主力大幅流入")
+            score += 3
+        elif main_net < -50000000:
+            conditions.append("💸 主力大幅流出")
+            score -= 2
+
+    return conditions, score
+
+
+def format_daily_screening(results: list) -> str:
+    """
+    每日选股筛选 —— 从跟踪标的中选出满足条件的个股
+    支持筛选条件: MACD金叉/RSI超卖/放量突破/均线多头/布林极端
+    """
+    # 收集所有触发条件的股票
+    triggered = []
+    for r in results:
+        if r.get("error"):
+            continue
+        conds, score = _get_screening_conditions(r)
+        if conds:  # 至少触发一个条件
+            triggered.append((r, conds, score))
+
+    # 按分数降序
+    triggered.sort(key=lambda x: x[2], reverse=True)
+
+    total = len([r for r in results if not r.get("error")])
+    hit = len(triggered)
+
+    if hit == 0:
+        return (
+            "## 🔍 每日选股筛选\n\n"
+            f"📭 今日跟踪 {total} 只标的，**无标的触发筛选条件**。\n\n"
+            "所有标的均处于中性或无序状态，建议继续观望。\n\n---\n\n"
+        )
+
+    # 摘要
+    cond_summary = {}
+    for _r, conds, _s in triggered:
+        for c in conds:
+            key = c.split("(")[0]  # 去掉括号内细节
+            cond_summary[key] = cond_summary.get(key, 0) + 1
+
+    summary_parts = []
+    summary_parts.append(f"> 📊 今日跟踪 {total} 只标的，**{hit} 只**触发筛选条件。\n")
+    if cond_summary:
+        summary_parts.append("> 触发分布：")
+        for c, cnt in sorted(cond_summary.items(), key=lambda x: x[1], reverse=True):
+            summary_parts.append(f">   - {c}：{cnt} 只")
+    summary = "\n".join(summary_parts)
+
+    # 表格
+    def _pct_display(val):
+        if val is None:
+            return "-"
+        s = "+" if val > 0 else ""
+        return f"{s}{val:.2f}%"
+
+    def _signal_display(signal):
+        d = {
+            "strong_buy": "🚀 强烈买入",
+            "buy": "📈 偏多",
+            "neutral": "⏳ 观望",
+            "sell": "📉 偏空",
+            "strong_sell": "⚠️ 回避",
+        }
+        return d.get(signal, "❓")
+
+    table_rows = []
+    for r, conds, score in triggered:
+        name = r.get("config", {}).get("name", "")
+        pct = r.get("quote", {}).get("pct_change", 0)
+        signal = r.get("swing", {}).get("signal", "")
+        cond_str = " · ".join(conds[:3])  # 最多3个条件
+        table_rows.append(
+            f"| **{name}** | {cond_str} | {_pct_display(pct)} | {_signal_display(signal)} |"
+        )
+    table = "\n".join(table_rows)
+
+    # Top picks (综合评分最高)
+    top = triggered[:5]
+    top_lines = []
+    for i, (r, conds, score) in enumerate(top, 1):
+        name = r.get("config", {}).get("name", "")
+        price = r.get("quote", {}).get("price", 0)
+        pct = r.get("quote", {}).get("pct_change", 0)
+        cond_str = " · ".join(conds[:3])
+        top_lines.append(f"  **{i}. {name}** ({_pct_display(pct)}) — {cond_str}")
+
+    top_picks = "\n".join(top_lines) if top_lines else "（无）"
+
+    return _SCREENING_TEMPLATE.format(
+        summary=summary,
+        table=table,
+        top_picks=top_picks,
+    )
+
+
 def format_full_report(results: list, date_str: str) -> tuple:
     """
     格式化完整报告
@@ -312,7 +525,7 @@ def format_full_report(results: list, date_str: str) -> tuple:
     lines.append("")
 
     # === 总览表 ===
-    lines.append("| 📊 标的 | 💰 价格 | 📈 涨跌 | 🎯 信号 | 📐 均线 | 📡 RSI | 🔄 MACD | 💰 主力净流入 |")
+    lines.append("| 📊 标的 | 💰 价格 | 📈 涨跌 | 🎯 信号 | 📐 均线 | 📡 RSI | 🔄 MACD | 💰 资金净额 |")
     lines.append("|---|---|---|---|---|---|---|---|")
 
     for r in results:
@@ -348,7 +561,7 @@ def format_full_report(results: list, date_str: str) -> tuple:
         # 资金流向
         money_flow = r.get("money_flow", [])
         if money_flow:
-            main_net = money_flow[0].get("main_net", 0)
+            main_net = _flow_net(money_flow)
             if main_net > 0:
                 mf_str = f"🟢+{_amt(main_net)}"
             elif main_net < 0:

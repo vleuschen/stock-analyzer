@@ -39,7 +39,8 @@ def _get_symbol(code: str, market: str) -> str:
     return f"{m}{code}"
 
 
-def _https_get_json(host: str, path: str, timeout: int = 15, encoding: str = "utf-8") -> any:
+def _https_get_json(host: str, path: str, timeout: int = 15, encoding: str = "utf-8",
+                    extra_headers: dict = None) -> any:
     """通过 http.client 直连 HTTPS，返回解析后的 JSON"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -48,6 +49,8 @@ def _https_get_json(host: str, path: str, timeout: int = 15, encoding: str = "ut
         "Accept-Encoding": "identity",
         "Connection": "keep-alive",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     conn = http.client.HTTPSConnection(host, 443, timeout=timeout, context=_SSL_CTX)
     conn.request("GET", path, headers=headers)
     resp = conn.getresponse()
@@ -112,12 +115,12 @@ def fetch_realtime_quote(code: str, market: str) -> dict:
     change = price - pre_close if pre_close else 0
     pct_change = (change / pre_close * 100) if pre_close else 0
 
-    # 腾讯行情 API 字段 [62]/[70]/[71] 包含资金流向数据（百万元）
-    # 与东方财富 stock/get 接口 f120-122 数据一致（f*100）
-    # [62] = 中单净流入(百万元), [70] = 主力净流入(百万元), [71] = 小单净流入(百万元)
-    main_net_mv = safe_float(fields[70]) if len(fields) > 70 else 0  # 百万元
-    small_net_mv = safe_float(fields[71]) if len(fields) > 71 else 0
-    medium_net_mv = safe_float(fields[62]) if len(fields) > 62 else 0
+    # ⚠️ 注意：腾讯行情接口第 62/70/71 号字段是「年初至今/20日/60日涨跌幅(%)」，
+    # 不是资金流向。历史版本曾把它们当资金流使用，导致数据完全错误（已修正）。
+    # 这些区间涨跌幅这里顺手保留下来，字段名如实标注。
+    chg_ytd = safe_float(fields[62]) if len(fields) > 62 else 0.0
+    chg_20d = safe_float(fields[70]) if len(fields) > 70 else 0.0
+    chg_60d = safe_float(fields[71]) if len(fields) > 71 else 0.0
 
     return {
         "code": fields[2],
@@ -138,10 +141,204 @@ def fetch_realtime_quote(code: str, market: str) -> dict:
         "circ_mv": safe_float(fields[44]) * 1e8 if len(fields) > 44 else 0,   # 亿→元
         "amplitude": safe_float(fields[43]) if len(fields) > 43 else 0,  # %
         "volume_ratio": safe_float(fields[49]) if len(fields) > 49 else 0,
-        # 资金流向（来自腾讯行情 API 字段 [62]/[70]/[71]）
-        "main_net": main_net_mv * 1000000,    # 百万元→元
-        "small_net": small_net_mv * 1000000,
-        "medium_net": medium_net_mv * 1000000,
+        # 区间涨跌幅（腾讯行情内嵌，单位 %）
+        "chg_ytd": chg_ytd,
+        "chg_20d": chg_20d,
+        "chg_60d": chg_60d,
+    }
+
+
+# 东方财富市场前缀：1=沪市, 0=深市/北交所
+_EM_PREFIX = {"sh": "1", "sz": "0", "bj": "0"}
+
+# 资金流接口的限流 / 熔断状态（避免被数据源封 IP）
+_FLOW_STATE = {"last_call": 0.0, "em_fail": 0, "em_off": False,
+               "sina_fail": 0, "sina_off": False}
+
+
+def _throttle(min_interval: float = 0.4):
+    """两次资金流请求之间至少间隔 min_interval 秒"""
+    delta = time.time() - _FLOW_STATE["last_call"]
+    if delta < min_interval:
+        time.sleep(min_interval - delta)
+    _FLOW_STATE["last_call"] = time.time()
+
+
+def _to_float(x, default=0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fetch_flow_eastmoney(code: str, market: str, days: int) -> list:
+    """东方财富资金流：主力/大单/超大单/中单/小单 全口径（单位：元）"""
+    if _FLOW_STATE["em_off"]:
+        return []
+
+    prefix = _EM_PREFIX.get(market.lower(), "0")
+    path = (
+        f"/api/qt/stock/fflow/kline/get?lmt={days}&klt=101&secid={prefix}.{code}"
+        "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+    )
+
+    data = None
+    for attempt in range(2):
+        _throttle()
+        try:
+            data = _https_get_json(
+                "push2.eastmoney.com", path, timeout=12,
+                extra_headers={"Referer": "https://data.eastmoney.com/"},
+            )
+            break
+        except Exception:
+            if attempt == 0:
+                time.sleep(1.5)
+
+    klines = (data or {}).get("data", {}).get("klines") if isinstance(data, dict) else None
+    if not klines:
+        _FLOW_STATE["em_fail"] += 1
+        if _FLOW_STATE["em_fail"] >= 3:
+            _FLOW_STATE["em_off"] = True
+            print("  ⚠️ 东方财富资金流连续失败，本次运行改用备用数据源")
+        return []
+
+    _FLOW_STATE["em_fail"] = 0
+    rows = []
+    for line in klines:
+        parts = str(line).split(",")
+        if len(parts) < 6:
+            continue
+        rows.append({
+            "date": parts[0],
+            # 东财口径：f52=主力净额, f53=小单, f54=中单, f55=大单, f56=超大单
+            "main_net": _to_float(parts[1]),
+            "small_net": _to_float(parts[2]),
+            "medium_net": _to_float(parts[3]),
+            "big_net": _to_float(parts[4]),
+            "super_net": _to_float(parts[5]),
+            "source": "eastmoney",
+        })
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    return rows
+
+
+def _fetch_flow_sina(code: str, market: str, days: int) -> list:
+    """
+    新浪资金流（备用数据源）：提供超大单净额与净流入总额，单位：元
+    注意：口径与东财不同，主力净额记为 None，只提供超大单 net。
+    """
+    if _FLOW_STATE["sina_off"]:
+        return []
+
+    symbol = f"{market.lower()}{code}"
+    path = ("/quotes_service/api/json_v2.php/MoneyFlow.ssl_qsfx_zjlrqs"
+            f"?page=1&num={days}&sort=opendate&asc=0&daima={symbol}")
+
+    data = None
+    for attempt in range(2):
+        _throttle()
+        try:
+            data = _https_get_json(
+                "vip.stock.finance.sina.com.cn", path, timeout=12,
+                extra_headers={"Referer": "https://finance.sina.com.cn/"},
+            )
+            break
+        except Exception:
+            if attempt == 0:
+                time.sleep(1.5)
+
+    if not isinstance(data, list) or not data:
+        _FLOW_STATE["sina_fail"] += 1
+        if _FLOW_STATE["sina_fail"] >= 3:
+            _FLOW_STATE["sina_off"] = True
+            print("  ⚠️ 新浪资金流连续失败，本次运行不再尝试")
+        return []
+
+    _FLOW_STATE["sina_fail"] = 0
+    rows = []
+    for item in data:
+        date = str(item.get("opendate", ""))
+        if not date:
+            continue
+        rows.append({
+            "date": date,
+            "main_net": None,                       # 新浪不提供主力口径
+            "super_net": _to_float(item.get("r0_net")),   # 超大单净额
+            "net_amount": _to_float(item.get("netamount")),
+            "source": "sina",
+        })
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    return rows
+
+
+def fetch_money_flow(code: str, market: str, days: int = 10) -> list[dict]:
+    """
+    获取个股资金流向（单位：元），返回按日期倒序的列表，[0] 为最新交易日。
+
+    数据源优先级：东方财富（全口径）→ 新浪（超大单口径）。
+    "main_net" 仅在东方财富口径下存在；新浪口径使用 "super_net"。
+    两个数据源都失败时返回空列表，调用方需能降级（推送里不显示资金行）。
+    """
+    rows = _fetch_flow_eastmoney(code, market, days)
+    if rows:
+        return rows
+    return _fetch_flow_sina(code, market, days)
+
+
+def flow_main(flow: dict) -> float:
+    """取该条资金流记录可用的「主力口径」金额（东财 main_net，退化到新浪超大单）"""
+    if not flow:
+        return 0.0
+    if flow.get("main_net") is not None:
+        return flow["main_net"]
+    return flow.get("super_net") or 0.0
+
+
+def flow_label(flow: dict) -> str:
+    """资金口径说明，用于推送里如实标注数据来源口径"""
+    if not flow:
+        return "资金"
+    return "主力" if flow.get("main_net") is not None else "超大单"
+
+
+def latest_flow(money_flow: list[dict]) -> dict:
+    """取最新一天的资金流向记录（列表为倒序存储，[0] 即最新）"""
+    if not money_flow:
+        return {}
+    return money_flow[0]
+
+
+def summarize_money_flow(money_flow: list[dict]) -> dict:
+    """
+    汇总资金流向：最新一日、连续净流入/流出天数、近5日累计主力净额
+    """
+    if not money_flow:
+        return {}
+
+    latest = money_flow[0]
+    consec_in = 0
+    consec_out = 0
+    for row in money_flow:
+        v = flow_main(row)
+        if v > 0:
+            if consec_out:
+                break
+            consec_in += 1
+        elif v < 0:
+            if consec_in:
+                break
+            consec_out += 1
+        else:
+            break
+
+    return {
+        "latest": latest,
+        "sum5": sum(flow_main(r) for r in money_flow[:5]),
+        "consec_in": consec_in,
+        "consec_out": consec_out,
+        "label": flow_label(latest),
+        "source": latest.get("source", ""),
     }
 
 
@@ -223,7 +420,7 @@ def _fmt_money(val: float) -> str:
 def fetch_stock_data(code: str, market: str, kline_days: int = 120) -> dict:
     """
     一站式获取股票全部数据（行情 + K线 + 资金流向）
-    资金流向数据从腾讯行情 API 内嵌字段提取，无需额外接口
+    资金流向来自东方财富 fflow 接口（真实主力/大单/中单/小单净额）
     """
     quote = fetch_realtime_quote(code, market)
     time.sleep(0.3)
@@ -231,19 +428,21 @@ def fetch_stock_data(code: str, market: str, kline_days: int = 120) -> dict:
     klines = fetch_kline(code, market, days=kline_days)
     time.sleep(0.3)
 
-    # 从行情数据中提取资金流向
-    main_net = quote.get("main_net", 0)
+    money_flow = fetch_money_flow(code, market)
+    latest = latest_flow(money_flow)
+    main_net = flow_main(latest)
     if main_net:
         _dir = "净流入" if main_net > 0 else "净流出"
-        print(f"  ✅ 资金流向: 主力{_dir} {_fmt_money(abs(main_net))}")
+        print(f"  ✅ 资金流向({latest.get('date', '')}): "
+              f"{flow_label(latest)}{_dir} {_fmt_money(abs(main_net))} [{latest.get('source', '')}]")
+
+    # 数据日期以 K 线最新一根为准（周末/节假日运行时避免误标成当天）
+    data_date = klines[-1]["date"] if klines else ""
 
     return {
         "quote": quote,
         "klines": klines,
-        "money_flow": [{
-            "main_net": quote.get("main_net", 0),
-            "small_net": quote.get("small_net", 0),
-            "medium_net": quote.get("medium_net", 0),
-            "date": time.strftime("%Y-%m-%d"),
-        }] if quote.get("main_net") != 0 or quote.get("small_net") != 0 else [],
+        "money_flow": money_flow,
+        "flow_summary": summarize_money_flow(money_flow),
+        "data_date": data_date,
     }

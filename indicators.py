@@ -90,7 +90,8 @@ def calc_macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int =
     返回: {dif, dea, macd_hist, is_golden_cross, is_death_cross}
     """
     if len(closes) < slow + signal:
-        return {"dif": 0, "dea": 0, "macd_hist": 0, "is_golden_cross": False, "is_death_cross": False}
+        return {"dif": 0, "dea": 0, "macd_hist": 0, "macd_hist_prev": 0,
+                "is_golden_cross": False, "is_death_cross": False}
 
     # 计算 DIF 序列
     ema_fast_series = []
@@ -119,6 +120,8 @@ def calc_macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int =
     dif = dif_series[-1]
     dea_val = dea_series[-1]
     macd_hist = 2 * (dif - dea_val)
+    hist_series = [2 * (d - e) for d, e in zip(dif_series, dea_series)]
+    macd_hist_prev = hist_series[-2] if len(hist_series) >= 2 else 0.0
 
     # 判断金叉/死叉（看最近两天）
     prev_dif = dif_series[-2]
@@ -131,6 +134,7 @@ def calc_macd(closes: list[float], fast: int = 12, slow: int = 26, signal: int =
         "dif": dif,
         "dea": dea_val,
         "macd_hist": macd_hist,
+        "macd_hist_prev": macd_hist_prev,
         "is_golden_cross": is_golden_cross,
         "is_death_cross": is_death_cross,
     }
