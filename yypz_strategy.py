@@ -148,13 +148,13 @@ def analyze_dragon_rebound(stock: dict) -> dict | None:
     chg_20d = ((closes[-1] - closes[-21]) / closes[-21] * 100) if len(closes) >= 21 else 0
     if chg_20d < -20:
         score += 25
-        reasons.append(f"📉 近20日跌幅{_f(chg_20d)}%，深度回调提供反抽空间")
+        reasons.append(f"📉 近20日跌幅{abs(chg_20d):.2f}%，深度回调提供反抽空间")
     elif chg_20d < -10:
         score += 15
-        reasons.append(f"📉 近20日跌幅{_f(chg_20d)}%，回调较为充分")
+        reasons.append(f"📉 近20日跌幅{abs(chg_20d):.2f}%，回调较为充分")
     elif chg_20d < -5:
         score += 8
-        reasons.append(f"📊 近20日跌{_f(chg_20d)}%，轻度回调")
+        reasons.append(f"📊 近20日跌幅{abs(chg_20d):.2f}%，轻度回调")
 
     # 2. RSI超卖信号
     if rsi14 is not None:

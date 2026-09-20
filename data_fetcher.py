@@ -155,6 +155,21 @@ _EM_PREFIX = {"sh": "1", "sz": "0", "bj": "0"}
 _FLOW_STATE = {"last_call": 0.0, "em_fail": 0, "em_off": False,
                "sina_fail": 0, "sina_off": False}
 
+# 东方财富资金流端点（按「能拿到多长历史」排序）
+#   push2his + daykline = 真正的历史资金流接口，可返回 lmt 根日线
+#   push2 / push2delay 的同名接口只返回最新一根，仅作兜底
+_EM_FLOW_ENDPOINTS = [
+    ("push2his.eastmoney.com", "/api/qt/stock/fflow/daykline/get"),
+    ("push2.eastmoney.com", "/api/qt/stock/fflow/daykline/get"),
+    ("push2delay.eastmoney.com", "/api/qt/stock/fflow/daykline/get"),
+]
+
+# 少于该行数就不算拿到了历史（连续流入天数 / 近5日累计会失真），改用备用源
+_MIN_FLOW_ROWS = 3
+
+# 端点级熔断：东财按 IP 限流，某个域名连续失败两次就不再撞它，避免拖慢整轮
+_EM_HOST_FAIL = {host: 0 for host, _ in _EM_FLOW_ENDPOINTS}
+
 
 def _throttle(min_interval: float = 0.4):
     """两次资金流请求之间至少间隔 min_interval 秒"""
@@ -177,26 +192,32 @@ def _fetch_flow_eastmoney(code: str, market: str, days: int) -> list:
         return []
 
     prefix = _EM_PREFIX.get(market.lower(), "0")
-    path = (
-        f"/api/qt/stock/fflow/kline/get?lmt={days}&klt=101&secid={prefix}.{code}"
+    query = (
+        f"?lmt={days}&klt=101&secid={prefix}.{code}"
         "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
     )
 
-    data = None
-    for attempt in range(2):
+    klines = []
+    for host, api in _EM_FLOW_ENDPOINTS:
+        if _EM_HOST_FAIL[host] >= 2:
+            continue
         _throttle()
         try:
             data = _https_get_json(
-                "push2.eastmoney.com", path, timeout=12,
+                host, api + query, timeout=12,
                 extra_headers={"Referer": "https://data.eastmoney.com/"},
             )
-            break
         except Exception:
-            if attempt == 0:
-                time.sleep(1.5)
+            _EM_HOST_FAIL[host] += 1
+            continue
+        rows = (data or {}).get("data", {}).get("klines") if isinstance(data, dict) else None
+        _EM_HOST_FAIL[host] = 0
+        if rows and len(rows) > len(klines):
+            klines = rows
+        if len(klines) >= days:
+            break
 
-    klines = (data or {}).get("data", {}).get("klines") if isinstance(data, dict) else None
-    if not klines:
+    if len(klines) < _MIN_FLOW_ROWS:
         _FLOW_STATE["em_fail"] += 1
         if _FLOW_STATE["em_fail"] >= 3:
             _FLOW_STATE["em_off"] = True

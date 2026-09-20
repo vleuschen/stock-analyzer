@@ -3,6 +3,8 @@
 风格：像朋友分享，带点 emoji，少 AI 味儿，看着不累
 """
 
+import signals
+
 
 def _f(val, decimals=2):
     """格式化数字"""
@@ -31,27 +33,13 @@ def _pct(val, sign=True):
 
 
 def _signal_tag(signal):
-    """信号标签"""
-    tags = {
-        "strong_buy": "买入",
-        "buy": "偏多",
-        "neutral": "观望",
-        "sell": "偏空",
-        "strong_sell": "回避",
-    }
-    return tags.get(signal, "未知")
+    """信号标签（词表见 signals.py）"""
+    return signals.text(signal)
 
 
 def _signal_mark(signal):
-    """信号标记（emoji版）"""
-    marks = {
-        "strong_buy": "🚀",    # 火箭，冲！
-        "buy": "📈",           # 向上
-        "neutral": "⏳",       # 等一等
-        "sell": "📉",          # 向下
-        "strong_sell": "⚠️",   # 小心
-    }
-    return marks.get(signal, "❓")
+    """信号标记（emoji 版，run_daily 会反解析它，改词表请去 signals.py）"""
+    return signals.mark(signal)
 
 
 def _flow_net(flow_list):
@@ -471,14 +459,7 @@ def format_daily_screening(results: list) -> str:
         return f"{s}{val:.2f}%"
 
     def _signal_display(signal):
-        d = {
-            "strong_buy": "🚀 强烈买入",
-            "buy": "📈 偏多",
-            "neutral": "⏳ 观望",
-            "sell": "📉 偏空",
-            "strong_sell": "⚠️ 回避",
-        }
-        return d.get(signal, "❓")
+        return f"{signals.mark(signal)} {signals.text(signal)}"
 
     table_rows = []
     for r, conds, score in triggered:

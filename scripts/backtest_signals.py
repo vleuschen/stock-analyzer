@@ -80,10 +80,21 @@ def main():
     label = {"strong_buy": "🟢强烈买入", "buy": "🟢偏多", "neutral": "🟡观望",
              "sell": "🔴偏空", "strong_sell": "⚠️回避"}
 
-    print(f"\n{'='*62}")
+    # 全样本基准：用来分辨「信号有效」和「这段行情本来就涨」
+    baseline = [fwd for rets in forward_returns.values() for fwd in rets]
+    base_avg = sum(baseline) / len(baseline)
+
+    def _median(values: list) -> float:
+        s = sorted(values)
+        mid = len(s) // 2
+        return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+    print(f"\n{'='*74}")
     print(f"信号分布与 5 日前瞻收益（样本 {total} 个，回溯 {back_days} 个交易日）")
-    print(f"{'='*62}")
-    print(f"{'信号':<12}{'次数':>6}{'占比':>8}{'平均分':>8}{'5日平均':>10}{'5日胜率':>9}")
+    print(f"基准：全样本 5 日平均 {base_avg:+.2f}%（超额 = 该信号 - 基准）")
+    print(f"{'='*74}")
+    print(f"{'信号':<12}{'次数':>6}{'占比':>8}{'平均分':>8}{'5日平均':>10}"
+          f"{'超额':>9}{'中位数':>9}{'胜率':>8}")
     for sig in order:
         n = signal_count.get(sig, 0)
         if not n:
@@ -93,7 +104,7 @@ def main():
         avg_ret = sum(rets) / len(rets)
         win = sum(1 for r in rets if r > 0) / len(rets) * 100
         print(f"{label[sig]:<12}{n:>6}{n / total * 100:>7.1f}%{avg_score:>8.1f}"
-              f"{avg_ret:>9.2f}%{win:>8.1f}%")
+              f"{avg_ret:>9.2f}%{avg_ret - base_avg:>8.2f}%{_median(rets):>8.2f}%{win:>7.1f}%")
 
     print("\n最看好的 10 个样本（按评分）:")
     for date, name, sig, score, fwd in sorted(samples, key=lambda x: -x[3])[:10]:

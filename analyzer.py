@@ -152,14 +152,36 @@ def main():
     print(f"✅ 报告已保存: {report_path}")
 
     # 推送到微信
+    # 推送正文统一由 push_format 生成：归档报告里的 Markdown 表格/# 标题/加粗
+    # 在微信卡片里不渲染（会露出原始符号、单换行还会被吞），直接推 body 就是一堵墙。
     sendkey = os.getenv("SERVERCHAN_SENDKEY", "")
-    if sendkey:
-        print("\n📤 推送到微信...")
-        push_result = push_serverchan(sendkey, title, body)
-        if push_result.get("code") == 0:
-            print("✅ 微信推送成功！")
+    dry_run = os.getenv("PUSH_DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on")
+    if sendkey or dry_run:
+        import push_format
+        valid = [r for r in results if not r.get("error")]
+        data_date = max((r.get("data_date") for r in valid if r.get("data_date")), default=date_str)
+        counts = {}
+        for r in valid:
+            sig = r.get("swing", {}).get("signal", "unknown")
+            counts[sig] = counts.get(sig, 0) + 1
+        push_title = push_format.build_push_title(data_date, len(valid), counts)
+        push_body = push_format.build_push_body(data_date, results)
+
+        push_path = os.path.join("reports", f"push_{date_str}.md")
+        with open(push_path, "w", encoding="utf-8") as f:
+            f.write(f"{push_title}\n\n{push_body}\n")
+        print(f"✅ 推送正文已存档: {push_path}")
+
+        if dry_run:
+            print("\n🧪 PUSH_DRY_RUN 已开启，只生成不发送：\n")
+            print(push_body)
         else:
-            print(f"❌ 微信推送失败: {push_result}")
+            print("\n📤 推送到微信...")
+            push_result = push_serverchan(sendkey, push_title, push_body)
+            if push_result.get("code") == 0:
+                print("✅ 微信推送成功！")
+            else:
+                print(f"❌ 微信推送失败: {push_result}")
     else:
         print("\n⚠️ 未配置 SERVERCHAN_SENDKEY，跳过微信推送")
         print("   报告仅保存到本地文件")

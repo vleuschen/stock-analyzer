@@ -8,6 +8,10 @@
   2. yypz_strategy         → 老龙反抽选股
   3. zhengxi_report        → 郑希视角研报（归档用）
   4. push_format           → 组装一条适合微信阅读的推送正文并发送
+
+环境变量：
+  SERVERCHAN_SENDKEY  方糖 SendKey，缺省则只生成不发送
+  PUSH_DRY_RUN=1      只生成推送正文并打印预览，不发送（本地调排版用）
 """
 
 import os
@@ -21,19 +25,14 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import analyzer
+import signals
 import yypz_strategy
 import zhengxi_report
 import push_format
 from data_fetcher import fetch_realtime_quote
 
-# 报告文件里的信号 emoji → 内部信号名
-SIGNAL_BY_EMOJI = {
-    "🚀": "strong_buy",
-    "📈": "buy",
-    "⏳": "neutral",
-    "📉": "sell",
-    "⚠️": "strong_sell",
-}
+# 报告文件里的信号 emoji → 内部信号名（词表见 signals.py，勿在别处复制）
+SIGNAL_BY_EMOJI = signals.SIGNAL_BY_MARK
 
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
@@ -254,44 +253,55 @@ def main():
         print(f"✅ 完整报告已保存: {full_path}")
 
         # ---- 推送内容 ----
-        sendkey = os.getenv("SERVERCHAN_SENDKEY", "")
-        if not sendkey:
-            print("\n⚠️ 未配置 SERVERCHAN_SENDKEY，跳过微信推送")
+        # 正文无论是否发送都要生成：一是本地预览排版（PUSH_DRY_RUN=1），
+        # 二是把真正推出去的文案一起归档，事后能核对「微信里看到的」和「报告里的」是否一致。
+        data_date = pick_data_date(stock_results, date_str)
+        print(f"\n📤 组装推送（数据日期 {data_date}）...")
+
+        indices = fetch_indices()
+        prev_signals = load_previous_signals(date_str)
+        zhengxi_quotes = pick_zhengxi_quotes()
+
+        valid = [r for r in stock_results if not r.get("error")]
+        signal_counts = {}
+        for r in valid:
+            sig = r.get("swing", {}).get("signal", "unknown")
+            signal_counts[sig] = signal_counts.get(sig, 0) + 1
+
+        title = push_format.build_push_title(data_date, len(valid), signal_counts)
+        body = push_format.build_push_body(
+            data_date,
+            stock_results,
+            yypz_results=yypz_results,
+            indices=indices,
+            prev_signals=prev_signals,
+            zhengxi_quotes=zhengxi_quotes,
+            dragon_pool_size=len(yypz_strategy.OLD_DRAGON_POOL),
+        )
+
+        push_path = os.path.join("reports", f"push_{date_str}.md")
+        with open(push_path, "w", encoding="utf-8") as f:
+            f.write(f"{title}\n\n{body}\n")
+        print(f"   标题: {title}")
+        print(f"   正文: {len(body)} 字 → {push_path}")
+
+        if os.getenv("PUSH_DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on"):
+            print("\n🧪 PUSH_DRY_RUN 已开启，只生成不发送。推送正文预览：\n")
+            print("-" * 60)
+            print(body)
+            print("-" * 60)
         else:
-            data_date = pick_data_date(stock_results, date_str)
-            print(f"\n📤 组装推送（数据日期 {data_date}）...")
-
-            indices = fetch_indices()
-            prev_signals = load_previous_signals(date_str)
-            zhengxi_quotes = pick_zhengxi_quotes()
-
-            valid = [r for r in stock_results if not r.get("error")]
-            signal_counts = {}
-            for r in valid:
-                sig = r.get("swing", {}).get("signal", "unknown")
-                signal_counts[sig] = signal_counts.get(sig, 0) + 1
-
-            title = push_format.build_push_title(data_date, len(valid), signal_counts)
-            body = push_format.build_push_body(
-                data_date,
-                stock_results,
-                yypz_results=yypz_results,
-                indices=indices,
-                prev_signals=prev_signals,
-                zhengxi_quotes=zhengxi_quotes,
-                dragon_pool_size=len(yypz_strategy.OLD_DRAGON_POOL),
-            )
-
-            print(f"   标题: {title}")
-            print(f"   正文: {len(body)} 字")
-
-            from notifier import push_serverchan
-            result = push_serverchan(sendkey, title, body)
-            if result.get("code") == 0:
-                print("✅ 推送成功！")
+            sendkey = os.getenv("SERVERCHAN_SENDKEY", "")
+            if not sendkey:
+                print("⚠️ 未配置 SERVERCHAN_SENDKEY，跳过发送（正文已存档）")
             else:
-                print(f"❌ 推送失败: {result}")
-                sys.exit(1)
+                from notifier import push_serverchan
+                result = push_serverchan(sendkey, title, body)
+                if result.get("code") == 0:
+                    print("✅ 推送成功！")
+                else:
+                    print(f"❌ 推送失败: {result}")
+                    sys.exit(1)
     except Exception as e:
         print(f"❌ 合编报告/推送失败: {e}")
         import traceback

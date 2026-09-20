@@ -9,6 +9,21 @@ v1 的问题：所有因子简单相加、互相抵消，且「超买就扣分�
 几乎从不给多头信号。v2 改为分维度评分 + 趋势自适应：
     - 趋势向上时，超买视为强势（小幅加分），超卖视为回调机会
     - 趋势向下时，超卖不再鼓励抄底（避免接飞刀），超买视为反弹结束
+
+v3 用回测结果收紧了出手口径（样本 1885、回溯 150 个交易日、前瞻 5 日）：
+    - 旧口径下「强烈买入」超额仅 +1.01%、「偏多」(25~50) 超额 -0.77%，且三段行情
+      全为负 —— 中间这一档根本没有正向期望，不能当买点卖。
+    - 「强烈买入」叠加「多头排列 + RSI<70 + 资金不流出」后超额 +2.80%、胜率 70%，
+      去极值、逐股留一、前后半段检验都还站得住，所以把它定为出手门槛；
+      够分但缺确认的一律降级为「偏多（观察）」。
+    - 单笔风险按买点 -6% 封顶，并给出盈亏比，盈亏比不足 1.5 时明确标注。
+    注意：样本只有 8 只自选票、7 个月，属于小样本，结论会随行情与票池变化，别当铁律。
+
+另一个回测里很显眼、但**故意没有动手改**的现象：低分区（尤其均线空头排列）的 5 日
+超额反而是正的（回避档 +0.44%，空头排列 +0.85%）—— 这批票在回撤后容易反抽。没有据此
+加「抄底信号」的原因：一是 7 个月单一 regime 的反转特征，换个行情就会反过来咬人；
+二是这套「低买」逻辑项目里已经有了，就是 yypz_strategy 的老龙反抽（超跌 + 缩量 + RSI 超卖），
+用两套口径同时表达同一个赌注没有意义。要动这块先重新回测再说。
 """
 
 
@@ -279,14 +294,42 @@ def analyze_swing_signals(indicators: dict, money_flow: list = None) -> dict:
     # ================= 综合 =================
     score = _clamp(trend_score + mom_score + pos_score + vol_score + flow_score, -100, 100)
 
-    if score >= 50:
+    # 「强烈买入」的确认门槛。本自选池 150 个交易日 / 1885 个样本的 5 日前瞻回测：
+    #   score>=50 单独用            → 超额 +1.01%，胜率 51%
+    #   score>=50 + 多头排列 + RSI<70 + 资金不流出 → 超额 +2.80%，胜率 70%
+    #     （去极值后 +2.28%；逐股留一超额均为正；前后半段 +1.30% / +3.01%）
+    # 反过来，score>=50 但 RSI>=70 的样本 5 日中位数 -1.10% —— 高分不等于能买，
+    # 均线未走多头 / 已经过热 / 资金在流出，都属于「看着强但没人接」，故降级。
+    strong_confirm = (
+        alignment == "bullish"
+        and rsi14 is not None and rsi14 < 70
+        and flow_score >= 0
+    )
+
+    if score >= 50 and strong_confirm:
         signal, emoji, text = "strong_buy", "🟢", "强烈买入"
         action = "多指标共振，可分批建仓，跌破支撑止损"
         confidence = "high"
-    elif score >= 25:
+    elif score >= 50:
+        # 缺什么写什么：泛泛写「等资金回流」，可资金明明在流入，就自相矛盾了
+        lacks = []
+        if alignment != "bullish":
+            lacks.append("均线未多头排列")
+        if rsi14 is not None and rsi14 >= 70:
+            lacks.append(f"RSI {rsi14:.0f} 偏热")
+        if flow_score < 0:
+            lacks.append("资金净流出")
+        lack_text = "、".join(lacks) or "确认条件不足"
+        reasons.append(f"🟡 高分但确认不足（{lack_text}），降级观察")
         signal, emoji, text = "buy", "🟢", "偏多"
-        action = "趋势偏多，轻仓参与，回踩支撑加仓更稳"
-        confidence = "medium"
+        action = f"评分达标但缺确认（{lack_text}），先观察不加仓"
+        confidence = "low"
+    elif score >= 25:
+        # 回测中这一档（25~50）的 5 日超额为 -0.77%，三段行情全为负，
+        # 即「偏多」不是买点，只作为强弱排序用，不给出手建议。
+        signal, emoji, text = "buy", "🟢", "偏多"
+        action = "偏强整理，尚未形成买点，等信号切换到强烈买入再动手"
+        confidence = "low"
     elif score > -25:
         signal, emoji, text = "neutral", "🟡", "观望"
         action = "多空力量接近，等方向明确再动手"
@@ -334,12 +377,18 @@ def analyze_swing_signals(indicators: dict, money_flow: list = None) -> dict:
         stop = support_levels[1][1] * 0.99 if len(support_levels) > 1 else entry * 0.96
         if stop >= entry:
             stop = entry * 0.96
+        # 单笔风险上限 6%：第二支撑位太远时按「买点 -6%」收口，
+        # 否则会出现「买点 10 元、止损 8 元」这种一次亏掉两成、实际没人执行的计划。
+        stop = max(stop, entry * 0.94)
         if target > entry > stop:
+            rr = (target - entry) / (entry - stop)
             trade_plan = {
                 "entry": entry,
                 "stop": stop,
                 "target": target,
-                "rr": (target - entry) / (entry - stop) if entry > stop else 0,
+                "rr": rr,
+                # 盈亏比 1.5 以下：赢面不够覆盖试错成本，推送里标注「偏低」
+                "rr_ok": rr >= 1.5,
             }
 
     return {

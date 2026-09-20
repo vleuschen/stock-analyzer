@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 将最新日报复制到 reports/daily/YYYY/MM/ 并 commit
-# 支持：基础日报 + yyPZ + 郑希研报 + 完整合编
+# 支持：基础日报 + yyPZ + 郑希研报 + 完整合编 + 微信推送正文
 set -euo pipefail
 
 DATE=$(date +%F)
@@ -15,6 +15,7 @@ REPORTS=(
     "reports/yypz_${DATE}.md:yypz_${DATE}.md"
     "reports/zhengxi_${DATE}.md:zhengxi_${DATE}.md"
     "reports/full_${DATE}.md:full_${DATE}.md"
+    "reports/push_${DATE}.md:push_${DATE}.md"
 )
 
 HAS_NEW=false
