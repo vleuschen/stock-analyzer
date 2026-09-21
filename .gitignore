@@ -18,6 +18,9 @@ reports/zhengxi_*.md
 reports/full_*.md
 reports/push_*.md
 
+# 排版校验脚本生成的手机预览图（随时能重跑生成，不必入库）
+reports/preview_*.png
+
 # 环境变量（可能包含敏感信息）
 .env
 run_test.bat

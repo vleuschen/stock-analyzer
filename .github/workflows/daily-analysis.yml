@@ -1,7 +1,11 @@
 # ============================================
 # A股全自动分析 - GitHub Actions 定时任务
-# 每个交易日收盘后（18:00）推送一次
-#   UTC 10:00 = 北京时间 18:00（收盘后）
+# 每天早 6:00（北京时间）推送一次，内容 = 上一个交易日的收盘复盘
+#   UTC 22:00 = 北京时间次日 06:00
+#   周日~周五 22:00 UTC → 周一~周六 06:00 北京时间
+#   周六早上这一次不能省：没有它，周五的收盘复盘要等到下周一才发，
+#   而周六 10:00 的周复盘正好缺周五那天的日报。
+# 周一（= 周六那次已推过周五的数据）由 run_daily.py 按数据日期自动跳过发送。
 # 整合：基础技术分析 + yyPZ老龙反抽 + 郑希视角研报
 # ============================================
 
@@ -9,8 +13,8 @@ name: Daily Stock Analysis
 
 on:
   schedule:
-    # UTC 10:00 = 北京时间 18:00（收盘后推送，每日一次）
-    - cron: '0 10 * * 1-5'
+    # UTC 22:00 = 北京时间 06:00（次日）；周日~周五 UTC 对应周一~周六北京时间
+    - cron: '0 22 * * 0-5'
 
   # 支持手动触发
   workflow_dispatch:
@@ -32,6 +36,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # 定时在 22:00 UTC 触发，跑起来时 runner 的 UTC 日期还是「昨天」。
+    # 不锁时区的话，python 写的是北京日期、shell 的 date +%F 却是 UTC 日期，
+    # 归档时按后者去找文件必然扑空，提交信息里的日期也会差一天。
+    env:
+      TZ: Asia/Shanghai
+
     steps:
       - name: 📥 拉取代码（含 .claude/skills 中的郑希数据）
         uses: actions/checkout@v4
@@ -45,6 +55,9 @@ jobs:
         id: analysis
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          # 定时任务真的推送；改代码顺带触发的那次只生成不推送 ——
+          # 推送时段说好了是早上 6 点，晚上改一版排版不该在你手机上也响一声。
+          PUSH_DRY_RUN: ${{ github.event_name == 'push' && '1' || '0' }}
         run: python run_daily.py
 
       - name: 📁 归档报告到仓库
@@ -56,9 +69,13 @@ jobs:
           git config user.name "stock-analyzer[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          DATE=$(date +%F)
-          YEAR=$(date +%Y)
-          MONTH=$(date +%m)
+          # 文件是按行情数据日期命名的（≈ 昨天），不是运行日期；run_daily.py 把它
+          # 透到这一步的 output 里。脚本中途挂了就退回今天，至少不会用空值去 cp。
+          DATE="${{ steps.analysis.outputs.data_date }}"
+          [ -n "$DATE" ] || DATE=$(date +%F)
+          YEAR=$(date -d "$DATE" +%Y)
+          MONTH=$(date -d "$DATE" +%m)
+          echo "📅 归档数据日期: ${DATE}"
 
           # 创建归档目录
           mkdir -p "reports/daily/${YEAR}/${MONTH}"

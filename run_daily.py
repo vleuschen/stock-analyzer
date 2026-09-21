@@ -9,9 +9,13 @@
   3. zhengxi_report        → 郑希视角研报（归档用）
   4. push_format           → 组装一条适合微信阅读的推送正文并发送
 
+定时：北京时间每天 6:00（见 .github/workflows/daily-analysis.yml）跑的是「昨天收盘」，
+所以归档文件名一律用行情数据日期而不是运行日期，报告和推送里标的日期也是数据日期。
+
 环境变量：
   SERVERCHAN_SENDKEY  方糖 SendKey，缺省则只生成不发送
   PUSH_DRY_RUN=1      只生成推送正文并打印预览，不发送（本地调排版用）
+  GITHUB_OUTPUT       Actions 专用：把数据日期透给归档步骤，本机运行时不设置
 """
 
 import os
@@ -140,6 +144,26 @@ def pick_data_date(stock_results: list, fallback: str) -> str:
     return max(dates) if dates else fallback
 
 
+# 最后一次真正推出去的数据日期（一行文本，随仓库提交，Actions 每次都是干净检出）
+PUSH_STATE = os.path.join("reports", ".last_push_date")
+
+
+def last_pushed_date() -> str:
+    try:
+        with open(PUSH_STATE, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def mark_pushed(data_date: str):
+    try:
+        with open(PUSH_STATE, "w", encoding="utf-8") as f:
+            f.write(data_date)
+    except OSError as e:
+        print(f"  ⚠️ 记录推送日期失败: {e}")
+
+
 # ============================================================
 # 主流程
 # ============================================================
@@ -161,6 +185,10 @@ def main():
     print(f"{'='*50}")
 
     stock_results = []
+    # 归档文件名一律用「行情数据日期」，不用运行日期：
+    # 早上 6 点跑的时候，运行日期是今天，复盘的却是昨天 —— 按运行日期命名的话，
+    # 周一那个文件里装的会是周五的数据，周六的周复盘读到的整周信号就整体错位一天。
+    data_date = date_str
     try:
         config = analyzer.load_config()
         stocks = config.get("stocks", [])
@@ -171,8 +199,11 @@ def main():
             stock_results.append(analyzer.analyze_stock(stock_config, kline_days))
             time.sleep(0.8)
 
-        _, body = analyzer.format_full_report(stock_results, date_str)
-        base_report_path = os.path.join("reports", f"report_{date_str}.md")
+        data_date = pick_data_date(stock_results, date_str)
+        print(f"\n📅 行情数据日期 {data_date}（运行日期 {date_str}）")
+
+        _, body = analyzer.format_full_report(stock_results, data_date)
+        base_report_path = os.path.join("reports", f"report_{data_date}.md")
         with open(base_report_path, "w", encoding="utf-8") as f:
             f.write(body)
         print(f"\n✅ 基础报告已保存: {base_report_path}")
@@ -193,8 +224,8 @@ def main():
     yypz_results = []
     try:
         yypz_results = yypz_strategy.run_old_dragon_rebound()
-        yypz_report = yypz_strategy.format_dragon_report(yypz_results, date_str)
-        with open(os.path.join("reports", f"yypz_{date_str}.md"), "w", encoding="utf-8") as f:
+        yypz_report = yypz_strategy.format_dragon_report(yypz_results, data_date)
+        with open(os.path.join("reports", f"yypz_{data_date}.md"), "w", encoding="utf-8") as f:
             f.write(yypz_report)
         print(f"\n✅ yyPZ报告已保存")
     except Exception as e:
@@ -214,11 +245,11 @@ def main():
     zhengxi_body = ""
     try:
         zhengxi_body = zhengxi_report.generate_full_zhengxi_report(
-            date_str=date_str,
+            date_str=data_date,
             stock_results=stock_results,
             yypz_results=yypz_results,
         )
-        with open(os.path.join("reports", f"zhengxi_{date_str}.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join("reports", f"zhengxi_{data_date}.md"), "w", encoding="utf-8") as f:
             f.write(zhengxi_body)
         print(f"\n✅ 郑希研报已保存")
     except Exception as e:
@@ -237,17 +268,17 @@ def main():
 
     try:
         # ---- 完整合编报告（归档用）----
-        full_lines = [f"# 📊 A股全分析报告 | {date_str}", "", "---", ""]
-        base_report_path = os.path.join("reports", f"report_{date_str}.md")
+        full_lines = [f"# 📊 A股全分析报告 | {data_date}", "", "---", ""]
+        base_report_path = os.path.join("reports", f"report_{data_date}.md")
         if os.path.exists(base_report_path):
             with open(base_report_path, "r", encoding="utf-8") as f:
                 full_lines.append(f.read())
         full_lines.append("\n\n---\n\n")
-        full_lines.append(yypz_strategy.format_dragon_report(yypz_results, date_str))
+        full_lines.append(yypz_strategy.format_dragon_report(yypz_results, data_date))
         full_lines.append("\n\n---\n\n")
         full_lines.append(zhengxi_body)
 
-        full_path = os.path.join("reports", f"full_{date_str}.md")
+        full_path = os.path.join("reports", f"full_{data_date}.md")
         with open(full_path, "w", encoding="utf-8") as f:
             f.write("\n".join(full_lines))
         print(f"✅ 完整报告已保存: {full_path}")
@@ -255,11 +286,10 @@ def main():
         # ---- 推送内容 ----
         # 正文无论是否发送都要生成：一是本地预览排版（PUSH_DRY_RUN=1），
         # 二是把真正推出去的文案一起归档，事后能核对「微信里看到的」和「报告里的」是否一致。
-        data_date = pick_data_date(stock_results, date_str)
         print(f"\n📤 组装推送（数据日期 {data_date}）...")
 
         indices = fetch_indices()
-        prev_signals = load_previous_signals(date_str)
+        prev_signals = load_previous_signals(data_date)
         zhengxi_quotes = pick_zhengxi_quotes()
 
         valid = [r for r in stock_results if not r.get("error")]
@@ -279,11 +309,17 @@ def main():
             dragon_pool_size=len(yypz_strategy.OLD_DRAGON_POOL),
         )
 
-        push_path = os.path.join("reports", f"push_{date_str}.md")
+        push_path = os.path.join("reports", f"push_{data_date}.md")
         with open(push_path, "w", encoding="utf-8") as f:
             f.write(f"{title}\n\n{body}\n")
         print(f"   标题: {title}")
         print(f"   正文: {len(body)} 字 → {push_path}")
+
+        # 归档步骤要按数据日期去找文件，把日期透出去（Actions 之外是空操作）
+        github_output = os.getenv("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a", encoding="utf-8") as f:
+                f.write(f"data_date={data_date}\n")
 
         if os.getenv("PUSH_DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on"):
             print("\n🧪 PUSH_DRY_RUN 已开启，只生成不发送。推送正文预览：\n")
@@ -292,12 +328,18 @@ def main():
             print("-" * 60)
         else:
             sendkey = os.getenv("SERVERCHAN_SENDKEY", "")
+            sent_before = last_pushed_date()
             if not sendkey:
                 print("⚠️ 未配置 SERVERCHAN_SENDKEY，跳过发送（正文已存档）")
+            elif sent_before == data_date:
+                # 6 点跑的是「上一个交易日」的收盘：周一和周六早上取到的都是周五的数据，
+                # 法定节假日更是天天一样。同一个交易日重复推一遍纯粹是打扰。
+                print(f"⏭️ {data_date} 的复盘已经推过了，跳过发送（正文已归档）")
             else:
                 from notifier import push_serverchan
                 result = push_serverchan(sendkey, title, body)
                 if result.get("code") == 0:
+                    mark_pushed(data_date)
                     print("✅ 推送成功！")
                 else:
                     print(f"❌ 推送失败: {result}")

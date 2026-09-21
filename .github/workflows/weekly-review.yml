@@ -22,6 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    # 锁北京时区：周复盘靠 datetime.now() 推算本周周一到周五，
+    # 触发时间一旦挪到 UTC 与北京日期不同的时段，取到的就是错的那一周。
+    env:
+      TZ: Asia/Shanghai
+
     steps:
       - name: 📥 拉取代码
         uses: actions/checkout@v4
