@@ -57,7 +57,9 @@ jobs:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
           # 定时任务真的推送；改代码顺带触发的那次只生成不推送 ——
           # 推送时段说好了是早上 6 点，晚上改一版排版不该在你手机上也响一声。
-          PUSH_DRY_RUN: ${{ github.event_name == 'push' && '1' || '0' }}
+          # ⚠️ 临时改成真推送：只为让这次运行发一条新排版到手机上看一眼，
+          # 下一条提交立刻改回上面那行的写法。
+          PUSH_DRY_RUN: '0'
         run: python run_daily.py
 
       - name: 📁 归档报告到仓库
