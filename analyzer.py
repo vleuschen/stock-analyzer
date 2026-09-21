@@ -167,7 +167,9 @@ def main():
         push_title = push_format.build_push_title(data_date, len(valid), counts)
         push_body = push_format.build_push_body(data_date, results)
 
-        push_path = os.path.join("reports", f"push_{date_str}.md")
+        # 存档名跟标题用同一个日期：周末/节假日运行时 data_date 是上一个交易日，
+        # 用运行日期命名会和归档步骤（按 data_date 找文件）错开
+        push_path = os.path.join("reports", f"push_{data_date}.md")
         with open(push_path, "w", encoding="utf-8") as f:
             f.write(f"{push_title}\n\n{push_body}\n")
         print(f"✅ 推送正文已存档: {push_path}")
