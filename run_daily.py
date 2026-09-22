@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
 🚀 A股全自动分析系统 —— 每日运行入口
-整合：基础分析 → yyPZ老龙反抽策略 → 郑希视角研报 → 推送
+整合：基础分析 → yyPZ老龙反抽策略 → 股票推送
 
 运行顺序：
   1. analyzer              → 自选股技术面分析
   2. yypz_strategy         → 老龙反抽选股
-  3. zhengxi_report        → 郑希视角研报（归档用）
-  4. push_format           → 组装一条适合微信阅读的推送正文并发送
+  3. push_format           → 组装一条适合微信阅读的推送正文并发送
 
-定时：北京时间每天 6:00（见 .github/workflows/daily-analysis.yml）跑的是「昨天收盘」，
-所以归档文件名一律用行情数据日期而不是运行日期，报告和推送里标的日期也是数据日期。
+定时：北京时间每个工作日 18:00（见 .github/workflows/daily-analysis.yml）运行，
+以当天收盘行情数据日期生成报告和推送。
 
 环境变量：
   SERVERCHAN_SENDKEY  方糖 SendKey，缺省则只生成不发送
@@ -31,7 +30,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyzer
 import signals
 import yypz_strategy
-import zhengxi_report
 import push_format
 from data_fetcher import fetch_realtime_quote
 
@@ -90,56 +88,8 @@ def load_previous_signals(before_date: str) -> dict:
     return signals
 
 
-def pick_zhengxi_quotes(max_age_days: int = 60, limit: int = 2) -> list:
-    """
-    提取郑希观点句。
-    语料超过 max_age_days 天没有更新时返回空列表（避免每天推送同一段陈旧内容）。
-    """
-    try:
-        files = zhengxi_report._find_corpus_files()
-        newest = next((f["date"] for f in files if f.get("date")), "")
-        if not newest:
-            return []
-        age = (datetime.now() - datetime.strptime(newest, "%Y-%m-%d")).days
-        if age > max_age_days:
-            print(f"  ⏭️ 郑希语料最新 {newest}（{age} 天前），已跳过该板块")
-            return []
-
-        substance = ("看好", "关注", "景气", "ROE", "流动性", "资本开支", "光通信",
-                     "算力", "新能源", "电力", "估值", "周期", "复利", "机会")
-        noise = ("采访", "记者", "现场", "问他", "他说", "笑道", "回忆", "风险提示",
-                 "免责", "转载", "来源：", "|")
-
-        matches = zhengxi_report.search_corpus(
-            ["展望", "看好", "光通信", "AI资本开支", "景气", "通胀"], max_results=3
-        )
-        quotes, seen = [], set()
-        for match in matches:
-            for snippet in match.get("snippets", []):
-                clean = zhengxi_report._clean_snippet(snippet)
-                for sentence in clean.split("。"):
-                    sentence = sentence.strip().lstrip("#•-*> ").strip()
-                    if not (15 <= len(sentence) <= 70):
-                        continue
-                    if any(word in sentence for word in noise):
-                        continue
-                    if not any(word in sentence for word in substance):
-                        continue
-                    key = sentence[:12]
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    quotes.append(sentence + "。")
-                    if len(quotes) >= limit:
-                        return quotes
-        return quotes
-    except Exception as e:
-        print(f"  ⚠️ 郑希观点提取失败: {e}")
-        return []
-
-
 def pick_data_date(stock_results: list, fallback: str) -> str:
-    """取行情数据实际日期（K线最新一天），周末/节假日运行时避免标成当天"""
+    """取行情数据实际日期（K线最新一天），避免报告日期脱离行情数据"""
     dates = [r.get("data_date") for r in stock_results if r.get("data_date")]
     return max(dates) if dates else fallback
 
@@ -251,34 +201,10 @@ def main():
     elapsed2 = time.time() - phase2_start
     print(f"\n⏱️ 阶段 2 耗时: {elapsed2:.1f}s\n")
 
-    # ====== 阶段 3: 郑希视角研报 ======
-    phase3_start = time.time()
-    print(f"{'='*50}")
-    print(f"📋 阶段 3/4: 郑希视角研报")
-    print(f"{'='*50}")
-
-    zhengxi_body = ""
-    try:
-        zhengxi_body = zhengxi_report.generate_full_zhengxi_report(
-            date_str=data_date,
-            stock_results=stock_results,
-            yypz_results=yypz_results,
-        )
-        with open(os.path.join("reports", f"zhengxi_{data_date}.md"), "w", encoding="utf-8") as f:
-            f.write(zhengxi_body)
-        print(f"\n✅ 郑希研报已保存")
-    except Exception as e:
-        print(f"❌ 郑希研报生成失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-    elapsed3 = time.time() - phase3_start
-    print(f"\n⏱️ 阶段 3 耗时: {elapsed3:.1f}s\n")
-
-    # ====== 阶段 4: 合并报告 + 推送 ======
+    # ====== 阶段 3: 合并报告 + 推送 ======
     phase4_start = time.time()
     print(f"{'='*50}")
-    print(f"📝 阶段 4/4: 生成完整合编报告 + 推送")
+    print(f"📝 阶段 3/3: 生成完整合编报告 + 推送")
     print(f"{'='*50}")
 
     try:
@@ -290,9 +216,6 @@ def main():
                 full_lines.append(f.read())
         full_lines.append("\n\n---\n\n")
         full_lines.append(yypz_strategy.format_dragon_report(yypz_results, data_date))
-        full_lines.append("\n\n---\n\n")
-        full_lines.append(zhengxi_body)
-
         full_path = os.path.join("reports", f"full_{data_date}.md")
         with open(full_path, "w", encoding="utf-8") as f:
             f.write("\n".join(full_lines))
@@ -305,8 +228,6 @@ def main():
 
         indices = fetch_indices()
         prev_signals = load_previous_signals(data_date)
-        zhengxi_quotes = pick_zhengxi_quotes()
-
         valid = [r for r in stock_results if not r.get("error")]
         signal_counts = {}
         for r in valid:
@@ -320,7 +241,6 @@ def main():
             yypz_results=yypz_results,
             indices=indices,
             prev_signals=prev_signals,
-            zhengxi_quotes=zhengxi_quotes,
             dragon_pool_size=len(yypz_strategy.OLD_DRAGON_POOL),
         )
 
@@ -352,8 +272,7 @@ def main():
                     sys.exit(1)
                 print("   本地运行已跳过发送（正文已存档）")
             elif should_skip_duplicate(data_date, sent_before, trigger):
-                # 6 点跑的是「上一个交易日」的收盘：周一和周六早上取到的都是周五的数据，
-                # 法定节假日更是天天一样。同一个交易日重复推一遍纯粹是打扰。
+                # 同一个行情日期不重复推送，避免手动运行或节假日重复打扰。
                 print(f"⏭️ {data_date} 的复盘已经推过了，跳过发送（正文已归档）")
             else:
                 from notifier import push_serverchan
@@ -380,8 +299,7 @@ def main():
     print(f"✅ 全部分析完成！总耗时 {total_elapsed:.1f} 秒")
     print(f"   阶段1(基础分析): {elapsed1:.1f}s")
     print(f"   阶段2(yyPZ):     {elapsed2:.1f}s")
-    print(f"   阶段3(郑希研报): {elapsed3:.1f}s")
-    print(f"   阶段4(合并+推送): {elapsed4:.1f}s")
+    print(f"   阶段3(合并+推送): {elapsed4:.1f}s")
     print(f"{'='*60}")
 
 

@@ -5,7 +5,7 @@
 把当天收盘复盘通过微信推送出去。
 
 ## 运行入口
-- `run_daily.py` — 每日全自动运行（基础分析 → yyPZ老龙反抽 → 郑希研报 → 合并推送）
+- `run_daily.py` — 每日全自动运行（基础分析 → yyPZ老龙反抽 → 股票合并推送）
 
 ## 模块结构
 | 文件 | 功能 |
@@ -20,7 +20,6 @@
 | `scripts/check_push_layout.py` | 排版体检 + 手机预览图（改完排版先跑这个） |
 | `notifier.py` | 方糖 ServerChan 微信推送 |
 | `yypz_strategy.py` | yyPZ游资盘子·老龙反抽选股策略 |
-| `zhengxi_report.py` | 郑希视角研报生成器 |
 | `scripts/weekly_review.py` | 周复盘生成 |
 | `scripts/backtest_signals.py` | 信号回测（分布 + 5 日前瞻收益 + 超额） |
 
@@ -32,7 +31,6 @@
     `fflow/daykline/get`（旧版写成 `fflow/kline/get`，一直取不到数据，静默退化成新浪口径）
   - 备用: 新浪 `MoneyFlow.ssl_qsfx_zjlrqs`（超大单口径），失败自动切换并标注
   - 连续失败 3 次会熔断该数据源，避免被封 IP；东财按 IP 限频，冷却是正常现象
-- 郑希观点语料: `.claude/skills/zhengxi-views/references/`
 
 ## 配置文件
 - `config.json` — 主要股票配置（跟踪标的列表）
@@ -64,7 +62,7 @@
   - 一行约 20 个汉字，超了就折行，而折行会把表格打散 → 所有行都过 `_fit()` 截断
   - 宽度按 em 估算（1 em = 1 汉字），半角字符查 `_HALF_EM` / `_UPPER_EM` 实测表，
     预算 `PHONE_EM = 20.0`
-- 板块顺序: ▎大盘 → ▎自选表现 → ▎今日变化 → ▎值得关注 → ▎自选全览（表格）→ ▎老龙反抽 → ▎郑希观点
+- 板块顺序: ▎一句话 → ▎大盘 → ▎自选表现 → ▎今日变化 → ▎值得关注 → ▎自选全览（画线表格）→ ▎老龙反抽
 - 「自选全览」是真正的表格：一票一行「emoji 标记 ｜ 名称 ｜ 涨跌 ｜ 评分」，按评分降序，
   档位靠 emoji 列区分（不再另起分组标题）
 - 「今日变化」对比 `reports/daily/` 里上一份日报的信号（反解析 `signals.MARK` 里的 emoji），
@@ -72,7 +70,6 @@
 - 顶部日期用 K 线最新日期（`data_date`），避免周末/节假日误标成当天
 - 资金流数据若比 `data_date` 旧，行内标注〔MM-DD〕，避免把旧资金当成当天；
   加不下就整条略去（不截断，数字截一半比不写更误导）
-- 郑希语料超过 60 天未更新时自动隐藏该板块
 - 正文每次运行都会存 `reports/push_<data_date>.md`（随日报归档），
   微信里看到的和仓库里存的必须一致
 
@@ -82,11 +79,6 @@
 - 也可以体检真实输出：`python scripts/check_push_layout.py reports/push_2026-09-18.md`
 - `PUSH_DRY_RUN=1 python run_daily.py` —— 只生成正文并打印预览，不发送
 - 不配 `SERVERCHAN_SENDKEY` 时同样只生成不发送
-
-## 郑希视角研报
-- 基于 zhengxi-views skill（安装于 `.claude/skills/zhengxi-views/`）
-- 研报结构：宏观判断 → 行业聚焦 → 持仓印证 → 策略展望
-- 数据来源：郑希公开语料（2012-2026）+ 基金真实持仓
 
 ## GitHub Actions
 - `daily-analysis.yml` — 每个工作日 18:00 UTC+8 一推（cron `0 10 * * 1-5` UTC），
@@ -107,7 +99,6 @@
 - `DEEPSEEK_API_KEY` — DeepSeek API 密钥（周复盘用）
 
 ## 已安装的 skills
-- `.claude/skills/zhengxi-views/` — 郑希观点语料（项目内）
 - `~/.zcode/skills/aws-wechat-article-*` — 微信公众号排版 skills（共 9 个，
   来自 https://github.com/aiworkskills/wechat-article-skills）。
   注意：那套 skill 走的是**公众号 API 富 HTML 发布**，与本项目「方糖 → 微信服务号模板消息」

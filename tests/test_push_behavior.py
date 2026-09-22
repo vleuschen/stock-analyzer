@@ -100,6 +100,8 @@ class PushBehaviorTests(unittest.TestCase):
         self.assertIn("└", body)
         self.assertIn("趋势", body)
         self.assertIn("总分=五项相加", body)
+        self.assertNotIn("郑希观点", body)
+        self.assertNotIn("这段观点", body)
 
     def test_focus_card_never_truncates_a_money_amount(self):
         stock = {

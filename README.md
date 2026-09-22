@@ -74,7 +74,7 @@ cd stock-analyzer
 set SERVERCHAN_SENDKEY=你的SendKey    # Windows
 export SERVERCHAN_SENDKEY=你的SendKey  # Linux/Mac
 
-python run_daily.py        # 推荐：分析 + 老龙反抽 + 郑希研报 + 推送
+python run_daily.py        # 推荐：分析 + 老龙反抽 + 股票推送
 python analyzer.py         # 只跑自选股技术面（推送正文与上面同款）
 ```
 
@@ -158,7 +158,6 @@ python analyzer.py         # 只跑自选股技术面（推送正文与上面同
 ├── formatter.py                           # 归档报告（Markdown）格式化
 ├── push_format.py                         # 微信推送正文排版（纯文本表格，手机不折行）
 ├── yypz_strategy.py                       # yyPZ·老龙反抽策略
-├── zhengxi_report.py                      # 郑希视角研报
 ├── notifier.py                            # 方糖推送
 ├── scripts/check_push_layout.py           # 排版体检 + 手机预览图
 ├── scripts/weekly_review.py               # 周复盘
@@ -260,7 +259,6 @@ set PUSH_DRY_RUN=1 && python run_daily.py     # Windows cmd
   绝不截断（数字截一半比不写更误导）
 - 顶部日期为**行情数据日期**（18 点跑的是当天收盘数据）
 - 「自选全览」表格按评分降序，档位由 emoji 列区分，不再另起分组标题
-- 郑希观点语料超过 60 天未更新时自动隐藏该板块
 
 ## 注意事项
 

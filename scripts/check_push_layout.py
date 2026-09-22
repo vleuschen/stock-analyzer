@@ -198,7 +198,6 @@ def demo_body(with_strong_buy: bool = False) -> str:
         indices=[("上证", 3911.87, 0.94), ("深成", 13640.87, 1.72),
                  ("创业板", 3372.68, 2.25)],
         prev_signals=prev,
-        zhengxi_quotes=["流动性宽松叠加资本开支上行，光通信与算力仍是景气度最高的方向。"],
         dragon_pool_size=22,
     )
 

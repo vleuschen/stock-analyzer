@@ -27,7 +27,7 @@ Server酱 / 微信推送正文排版模块 —— 手机优先的纯文本表格
     硬塞会把「超大单+1735万」截成「超大单+1735…」，数字残了比不写更误导。
 
 版式（越靠上越是「今天必须知道」）：
-    ▎大盘 → ▎自选表现 → ▎今日变化 → ▎值得关注 → ▎自选全览 → ▎老龙反抽 → ▎郑希观点
+    ▎一句话 → ▎大盘 → ▎自选表现 → ▎今日变化 → ▎值得关注 → ▎自选全览 → ▎老龙反抽
 """
 
 import math
@@ -717,18 +717,6 @@ def _dragon_reason(r: dict) -> str:
     return reasons[0].lstrip("📉💫🔄📊⚪✅💤🛡️📏⭐💰💸📈 ").strip() if reasons else ""
 
 
-def _section_zhengxi(quotes: list) -> list:
-    """郑希观点，仅在语料新鲜时输出（由调用方判断）"""
-    quotes = [q for q in (quotes or []) if q and q.strip()]
-    if not quotes:
-        return []
-    lines = [_section("郑希观点")]
-    for q in quotes[:2]:
-        # 摘录按标点断，不要拦腰截断：观点句断在半句上，读起来像漏字
-        lines.append(_brief(q, PROSE_EM))
-    return lines
-
-
 # ============================================================
 # 正文组装
 # ============================================================
@@ -738,7 +726,6 @@ def build_push_body(data_date: str,
                     yypz_results: list = None,
                     indices: list = None,
                     prev_signals: dict = None,
-                    zhengxi_quotes: list = None,
                     dragon_pool_size: int = 22) -> str:
     """
     组装推送正文（纯文本，段落之间空行分隔）
@@ -748,7 +735,6 @@ def build_push_body(data_date: str,
         stock_results: analyzer 的分析结果列表
         indices: [(名称, 点位, 涨跌幅%), ...]
         prev_signals: {股票名: 上一交易日信号}，用于展示「今日变化」
-        zhengxi_quotes: 已清洗的郑希观点句（可为空）
     """
     valid = [r for r in stock_results if not r.get("error")]
     signal_counts = {}
@@ -767,7 +753,6 @@ def build_push_body(data_date: str,
         paragraphs += _section_focus(valid, data_date)
         paragraphs += _section_table(valid)
     paragraphs += _section_dragon(yypz_results or [], pool_size=dragon_pool_size)
-    paragraphs += _section_zhengxi(zhengxi_quotes)
 
     if not paragraphs:
         paragraphs.append(f"{_fmt_date_label(data_date)} 今天没有取到有效数据")

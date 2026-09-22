@@ -2,7 +2,7 @@
 # A股全自动分析 - GitHub Actions 定时任务
 # 每个工作日下午 18:00（北京时间）推送一次，内容 = 当天收盘复盘
 #   UTC 10:00 = 北京时间 18:00
-# 整合：基础技术分析 + yyPZ老龙反抽 + 郑希视角研报
+# 整合：基础技术分析 + yyPZ老龙反抽 + 股票推送
 # ============================================
 
 name: Daily Stock Analysis
@@ -41,7 +41,7 @@ jobs:
       TZ: Asia/Shanghai
 
     steps:
-      - name: 📥 拉取代码（含 .claude/skills 中的郑希数据）
+      - name: 📥 拉取代码
         uses: actions/checkout@v4
 
       - name: 🐍 设置 Python
@@ -49,7 +49,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 📊 运行全分析（基础分析 + yyPZ + 郑希研报）
+      - name: 📊 运行全分析（基础分析 + yyPZ + 股票推送）
         id: analysis
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
@@ -89,12 +89,6 @@ jobs:
           if [ -f "reports/yypz_${DATE}.md" ]; then
             cp "reports/yypz_${DATE}.md" "reports/daily/${YEAR}/${MONTH}/"
             git add "reports/daily/${YEAR}/${MONTH}/yypz_${DATE}.md"
-          fi
-
-          # 归档郑希研报
-          if [ -f "reports/zhengxi_${DATE}.md" ]; then
-            cp "reports/zhengxi_${DATE}.md" "reports/daily/${YEAR}/${MONTH}/"
-            git add "reports/daily/${YEAR}/${MONTH}/zhengxi_${DATE}.md"
           fi
 
           # 归档完整合编
