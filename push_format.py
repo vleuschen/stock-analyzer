@@ -10,8 +10,16 @@ Server酱 / 微信推送正文排版模块 —— 手机优先的纯文本表格
    既不折叠也不被吃掉（历史截图里 "　 华纬科技…" 的缩进能活下来就是证据）。
 3. **Markdown 在卡片端不解析**：`**加粗**` / `#` / 表格 / `- ` 列表会露出原始符号
    （点进详情页才渲染）→ 正文一律纯文本 + emoji + 全角空格。
-4. **一行约 20 个汉字**，超了就折行，折行会把表格打散。所有行都过一遍 `_fit()`
-   做宽度截断 —— 宁可截断，也不让手机去折行。
+4. **宽度分两档**（改宽度只改这两个常数）：
+
+   · `PHONE_EM = 24`：表格行、对齐行、标题行的硬上限。超了就会折行，
+     折行会把表格打散，所以这些行一律 `_fit()` 截断 —— 宁可截，不让它折。
+   · `PROSE_EM = 32`：说明性文字（理由、观点、备注）的上限。这些行在手机上
+     折成两行也读得通，放宽是为了在宽屏（微信 PC / 浏览器）上不显得半屏空。
+
+   为什么不是「手机一行到底几字」：同一份正文在微信 PC 上约 42 字/行，
+   在 390dp 手机上约 22-24 字/行 —— 静态文本没法自适应，所以结构行按手机锁死，
+   纯文字行给宽屏留空间。
 
 由此定下两条取舍：
   · 长句先按标点断（`_brief`），截也只截到标点/括号处，不把词和数字拦腰切断；
@@ -22,6 +30,7 @@ Server酱 / 微信推送正文排版模块 —— 手机优先的纯文本表格
     ▎大盘 → ▎自选表现 → ▎今日变化 → ▎值得关注 → ▎自选全览 → ▎老龙反抽 → ▎郑希观点
 """
 
+import math
 import re
 
 from signals import BEARISH, BULLISH, CARD as SIGNAL_EMOJI, RANK as SIGNAL_RANK, TEXT as SIGNAL_TEXT
@@ -29,9 +38,9 @@ from signals import BEARISH, BULLISH, CARD as SIGNAL_EMOJI, RANK as SIGNAL_RANK,
 # 段落分隔符：卡片端唯一真的能换行的东西
 PARA = "\n\n"
 
-# 一行能放下的宽度（em，1 em = 1 个汉字）。
-# 360dp 安卓屏减去卡片内边距后约 21 个汉字，375dp 的 iPhone 约 22 个，取 20 留余量。
-PHONE_EM = 20.0
+# 一行的宽度上限（em，1 em = 1 个汉字），两个档次见模块说明
+PHONE_EM = 24.0
+PROSE_EM = 32.0
 
 # 全角空格：微信里唯一撑得住列宽的空格
 PAD = "\u3000"
@@ -114,7 +123,9 @@ def _brief(text: str, budget: float) -> str:
     text = re.sub(r"\s*/\s*", "/", (text or "").strip())
     if _w(text) <= budget:
         return text
-    for sep in ("，", "；", "。", "、", "|"):
+    # 逗号通常只是证据串里的短停顿（例如「小仓试仓，确认后加仓」），
+    # 说明行应尽量保留后半句；先在完整句号/分号处断，放不下再按宽度收口。
+    for sep in ("；", "。", "、", "|"):
         head = text.split(sep)[0].strip()
         if head and _w(head) <= budget:
             return head
@@ -125,14 +136,104 @@ def _brief(text: str, budget: float) -> str:
     return _fit(text, budget)
 
 
+# ============================================================
+# 表格：真的一列一列对得齐
+# ============================================================
+
 def _pad_name(text: str, width: int = 4) -> str:
     """用全角空格把名称补齐到 width 个汉字宽（ASCII 空格撑不起列宽）"""
     return text + PAD * max(0, width - len(text))
 
 
-def _pad_left(text: str, width: int) -> str:
-    """左侧补空格到 width 个半角字符。微信会把连续空格折叠成一个，所以最多补 1 个。"""
-    return (" " + text) if width - len(text) == 1 else text
+def _cell(text: str, width: int, align: str = "left") -> str:
+    """
+    把单元格补到 width 个汉字宽。
+
+    列宽只能是整数字符（全角空格 1 em 一格），所以先把列宽向上取整，
+    再按四舍五入补空格 —— 同一列每行都这么补，列起点就不会漂。
+    """
+    gap = int(round(width - _w(text)))
+    if gap <= 0:
+        return text
+    return (PAD * gap + text) if align == "right" else (text + PAD * gap)
+
+
+def _columns(headers: dict, rows: list, aligns: dict = None, gap: int = 1,
+             tight_first: bool = False) -> tuple:
+    """
+    拼一张表：headers / cells 都是 {列名: 文本}，列宽取「表头与所有单元格」的最宽值。
+
+    列之间一律空 1 个全角空格（gap）：补到整列宽之后常常正好不留空，
+    「13.51+3.42%」这样两列贴在一起，数字列再对齐也读不出来。
+
+    `tight_first=True` 时第一列后面不再空这一格 —— 首列是 emoji + 名称，
+    emoji 宽 1.2 em，向上取整后本来就会多出 0.8-1.2 em，再空一格就白占 1 个字
+    （5 列的表，1 个字就是能不能塞进手机的区别）。首列是纯汉字的表别开这个开关：
+    中文名宽度是整数，取整后不留空，会直接贴到下一列上。
+
+    列宽由数据自己撑出来，所以表头、数据行、分隔线三者的列位置必然一致 ——
+    手写空格对齐那种做法，改一个字段就会错位。
+
+    返回 (行列表, 表格总宽 em)，总宽给表头分隔线用。
+    """
+    aligns = aligns or {}
+    names = list(headers)
+    widths = {}
+    for name in names:
+        widths[name] = int(math.ceil(max([_w(headers[name])] + [_w(r.get(name, "")) for r in rows])))
+    # step[i] = 第 i 列前面空几格（第 0 列前面不空格）
+    step = [0] + [0 if (i == 1 and tight_first) else gap for i in range(1, len(names))]
+
+    def render(cells: dict) -> str:
+        parts = []
+        for i, name in enumerate(names):
+            if i:
+                parts.append(PAD * step[i])
+            parts.append(_cell(cells.get(name, ""), widths[name], aligns.get(name, "left")))
+        return "".join(parts).rstrip()
+
+    rules = [render(headers)] + [render(r) for r in rows]
+    total = sum(widths.values()) + sum(step)
+    return rules, total
+
+
+def _rule(width: int, char: str = "—") -> str:
+    """表头下的分隔线：破折号在微信里按汉字宽渲染，连起来就是一条线"""
+    return char * width
+
+
+def _box_table(headers: list, rows: list, widths: list, aligns: list = None) -> list:
+    """生成 Unicode 画线表格；固定列宽，确保边框不会因数据长度漂移。"""
+    aligns = aligns or ["left"] * len(headers)
+
+    def cell(value: str, width: int, align: str) -> str:
+        value = _fit(str(value), width, tail="")
+        gap = max(0, int(round(width - _w(value))))
+        return (PAD * gap + value) if align == "right" else (value + PAD * gap)
+
+    def render(values: list) -> str:
+        cells = [cell(value, width, aligns[i])
+                 for i, (value, width) in enumerate(zip(values, widths))]
+        return "│" + "│".join(cells) + "│"
+
+    top = "┌" + "┬".join("─" * width for width in widths) + "┐"
+    separator = "├" + "┼".join("─" * width for width in widths) + "┤"
+    bottom = "└" + "┴".join("─" * width for width in widths) + "┘"
+    return [top, render(headers), separator] + [render(values) for values in rows] + [bottom]
+
+
+def _score_table(swing: dict) -> list:
+    """重点标的的五维评分表：总分不是涨跌幅，而是五项加总。"""
+    dimensions = swing.get("dimensions", {}) or {}
+    values = [
+        f"{dimensions.get('trend', 0):+g}",
+        f"{dimensions.get('momentum', 0):+g}",
+        f"{dimensions.get('position', 0):+g}",
+        f"{dimensions.get('volume', 0):+g}",
+        f"{dimensions.get('flow', 0):+g}",
+    ]
+    return _box_table(["趋势", "动能", "位置", "量价", "资金"], [values],
+                      [3, 3, 3, 3, 3], ["right"] * 5)
 
 
 # ============================================================
@@ -185,16 +286,36 @@ def _flow_net(flow: dict):
     return net
 
 
+def _flow_is_super(flow: dict) -> bool:
+    """这一格用的是不是「超大单」口径（表格里要用 ＊ 标出来，不能含糊）"""
+    return bool(flow) and flow.get("main_net") is None and flow.get("super_net") is not None
+
+
+def _amount(v, digits: int = 2) -> str:
+    """金额简写：+1.13亿 / +1735万"""
+    sign = "+" if v > 0 else "-"
+    a = abs(v)
+    if a >= 1e8:
+        return f"{sign}{a / 1e8:.{digits}f}亿"
+    if a >= 1e4:
+        return f"{sign}{a / 1e4:.0f}万"
+    return f"{sign}{a:.0f}"
+
+
 def _flow_short(flow: dict) -> str:
-    """紧凑资金证据：超大单+1.72亿 —— 手机上一行字字千金，「净流入」用 + 号代替"""
+    """带口径的资金证据：超大单+1.72亿（详情行用，口径写全）"""
     net = _flow_net(flow)
     if not net:
         return ""
-    label = flow.get("label", "主力")
-    sign = "+" if net > 0 else "-"
-    a = abs(net)
-    size = f"{a / 1e8:.2f}亿" if a >= 1e8 else (f"{a / 1e4:.0f}万" if a >= 1e4 else f"{a:.0f}")
-    return f"{label}{sign}{size}"
+    return f"{flow.get('label', '主力')}{_amount(net)}"
+
+
+def _flow_compact(flow: dict) -> str:
+    """表格里的一格：+1735万（列头已经写了「资金」，口径用 ＊ 区分）"""
+    net = _flow_net(flow)
+    if not net:
+        return "—"
+    return _amount(net) + ("＊" if _flow_is_super(flow) else "")
 
 
 def _flow_consec(flow: dict) -> str:
@@ -216,18 +337,30 @@ def _flow_lag_note(flow: dict, data_date: str) -> str:
     return ""
 
 
-def _volume_ratio(quote: dict, ind: dict) -> str:
+def _volume_ratio(r: dict) -> str:
     """
     量比：优先用行情里的真实量比（当日每分钟均量 / 过去5日同口径）。
     指标里的量比是「近5日均量 / 近20日均量」，口径不同，只在真实量比缺失时兜底，
     且明确写成「量能」以免和真量比混为一谈。
     """
-    vr = quote.get("volume_ratio")
+    vr = r.get("quote", {}).get("volume_ratio")
     if vr:
-        return f"量比 {_num(vr, 1)}"
-    vr = ind.get("volume_ratio")
+        return f"量比{_num(vr, 1)}"
+    vr = (r.get("indicators", {}) or {}).get("volume_ratio")
     if vr:
-        return f"量能 {_num(vr, 1)}"
+        return f"量能{_num(vr, 1)}"
+    return ""
+
+
+def _rsi_note(r: dict) -> str:
+    """RSI 极值才值得占一行字：50 附近没有信息量"""
+    rsi = ((r.get("indicators", {}) or {}).get("rsi", {}) or {}).get("rsi14")
+    if not rsi:
+        return ""
+    if rsi >= 75:
+        return f"RSI{_num(rsi, 0)}过热"
+    if rsi <= 30:
+        return f"RSI{_num(rsi, 0)}超卖"
     return ""
 
 
@@ -266,15 +399,19 @@ def build_push_title(data_date: str, n_stocks: int, signal_counts: dict = None) 
 
 def _section_index(indices: list) -> list:
     """
-    三大指数：一行一个，点位取整到个位（指数报价没人看小数点），
-    名称与点位用全角空格对齐，竖着能直接比。
+    三大指数：点位右对齐成列，竖着能直接比。
+
+    点位取整到个位（指数报价没人看小数点），涨跌幅右对齐 ——
+    两列都右对齐，一眼能看出哪天的创业板跌得更狠。
     """
     if not indices:
         return []
-    lines = [_section("大盘")]
-    for label, price, pct in indices:
-        lines.append(_fit(f"{_pad_name(label, 3)}{PAD}{price:.0f}{PAD}{_pct(pct)}"))
-    return lines
+    rows = [{"指数": label, "点位": f"{price:.0f}", "涨跌": _pct(pct)}
+            for label, price, pct in indices]
+    # 名称列左对齐，两个数字列右对齐 —— 列宽由数据自己撑，表头和数据行必然对齐
+    lines, _ = _columns({"指数": "指数", "点位": "点位", "涨跌": "涨跌"}, rows,
+                        aligns={"点位": "right", "涨跌": "right"})
+    return [_section("大盘")] + lines
 
 
 def _section_summary(valid: list, signal_counts: dict) -> list:
@@ -295,14 +432,31 @@ def _section_summary(valid: list, signal_counts: dict) -> list:
     if strong_sell:
         dist += f" · {_mark('strong_sell')}回避{strong_sell}"
 
-    # 「最强 / 最弱」不再单开一行：全览表里 13 只的涨跌都排在那里，扫一眼就有，
-    # 而这一行永远差几个字放不下（两只股票名 + 两个幅度 = 21 个汉字宽），
-    # 截断后剩个「-0…」，比不放还难看。
     return [
         _section("自选表现"),
         _fit(f"涨{up} · 跌{down} · 平{flat} · 均幅 {_pct(avg)}"),
         _fit(dist),
     ]
+
+
+def _section_headline(valid: list, signal_counts: dict) -> list:
+    """先给结论，再让后面的数字解释结论，避免用户在长卡片里找重点。"""
+    if not valid:
+        return [_section("一句话"), "数据不足，今天不下结论"]
+    pcts = [r.get("quote", {}).get("pct_change", 0) or 0 for r in valid]
+    up = sum(1 for pct in pcts if pct > 0)
+    strong = signal_counts.get("strong_buy", 0)
+    buy = signal_counts.get("buy", 0)
+    bearish = signal_counts.get("sell", 0) + signal_counts.get("strong_sell", 0)
+    if strong:
+        verdict = f"多头占优，{strong}只达到进攻标准"
+    elif buy:
+        verdict = f"偏强但未全面确认，{buy}只适合小仓试错"
+    elif bearish:
+        verdict = f"防守优先，{bearish}只处于弱势"
+    else:
+        verdict = "多空未决，等待方向确认"
+    return [_section("一句话"), _fit(f"{verdict} · {up}/{len(valid)}只上涨")]
 
 
 def _key_reason(r: dict, upgrading: bool = True) -> str:
@@ -321,12 +475,12 @@ def _key_reason(r: dict, upgrading: bool = True) -> str:
     return ""
 
 
-def _section_changes(valid: list, prev_signals: dict, max_items: int = 4) -> list:
+def _section_changes(valid: list, prev_signals: dict, max_items: int = 10) -> list:
     """
-    相比上一个交易日发生信号切换的标的 —— 一行一条。
+    相比上一个交易日发生信号切换的标的 —— 一行一条，全列出来。
 
-    最多列 4 条：全列出来就是 13 行，把「值得关注」挤到屏幕外面去了；
-    理由按「箭头 + 名称 + 转向」之后剩下的宽度截，优先切在标点处。
+    以前最多列 4 条、剩下的写「另 N 只见归档报告」，等于把当天最有信息量的
+    内容裁掉了：信号切换本来就不多（通常 3-7 条），一行一条也压不到别的板块。
     """
     changes = []
     for r in valid:
@@ -390,7 +544,9 @@ def _lack_note(swing: dict) -> str:
 def _focus_card(r: dict, data_date: str = "") -> list:
     """
     单只标的 2 行：第 1 行「谁 + 多少钱 + 多少分」，第 2 行缩进写「怎么做 + 为什么」。
-    价格和评分在表格里已经能竖着比了，这里只补表格给不出的结论。
+
+    第 2 行按 PROSE_EM 写：理由、资金、连续天数、量比、RSI 极值都是这里的信息，
+    宽屏上一行放得下就不该截 —— 手机折成两行也读得通（这行本来就是句子）。
     """
     cfg = r.get("config", {})
     quote = r.get("quote", {})
@@ -398,16 +554,17 @@ def _focus_card(r: dict, data_date: str = "") -> list:
     flow = swing.get("flow", {}) or {}
     signal = swing.get("signal", "")
     indent = PAD + " "
+    budget = PROSE_EM - _w(indent)
 
-    head = (f"{_mark(signal)} {cfg.get('name', '')}"
-            f" {_num(quote.get('price'))} {_pct(quote.get('pct_change'))}"
-            f" · {swing.get('score', 0):+.0f}分")
+    head = _fit(f"{_mark(signal)} {cfg.get('name', '')}"
+                f" {_num(quote.get('price'))} {_pct(quote.get('pct_change'))}"
+                f" · {swing.get('score', 0):+.0f}分")
 
     plan = swing.get("trade_plan") or {}
     if signal == "strong_buy" and plan:
         # 只有强买档才给可执行价位：偏多档在回测里没有正向期望，给买点等于误导
         rr = plan.get("rr") or 0
-        tail = f"{SEP}盈亏比{_num(rr, 1)}"
+        tail = f" · 盈亏比{_num(rr, 1)}"
         if rr and not plan.get("rr_ok", True):
             tail += "偏低，仓位减半"
         body = (f"买点 {_num(plan.get('entry'))}{SEP}止损 {_num(plan.get('stop'))}"
@@ -422,22 +579,35 @@ def _focus_card(r: dict, data_date: str = "") -> list:
             bits.append(f"跌破 {_num(supports[0][1])} 加速下行")
         body = SEP.join(bits) or swing.get("action", "")
     else:
-        # 偏多 / 观望：先写差哪一步，再给资金证据，别硬凑一句「观望」
-        bits = [x for x in (_lack_note(swing), _flow_short(flow)) if x]
-        body = SEP.join(bits)
-        if body:
-            # 连续天数、资金数据滞后都属于备注：放得下才加，放不下整条丢掉。
-            # 硬塞的后果是把「超大单+1735万」截成「超大单+1735…」—— 数字残了更误导。
-            for note in (_flow_consec(flow), _flow_lag_note(flow, data_date)):
-                if note and _w(indent + body + note) <= PHONE_EM:
-                    body += note
+        # 偏多 / 观望：先写差哪一步，再给资金、连续天数、量比 —— 都是可核对的证据
+        if signal == "buy":
+            action_note = ("激进者仅小仓试错" if swing.get("confidence") == "low"
+                           else "激进者可小仓试仓，确认后加仓")
         else:
+            action_note = ""
+        parts = [action_note, _lack_note(swing)]
+        parts = [p for p in parts if p]
+        body = SEP.join(parts)
+        flow_note = _flow_short(flow) + _flow_lag_note(flow, data_date)
+        # 资金数字不能被 _fit 截半：放不下时整条证据省略，避免「+173…」这种误导。
+        if flow_note:
+            candidate = f"{body}{SEP}{flow_note}" if body else flow_note
+            if _w(candidate) <= budget:
+                body = candidate
+        notes = [x for x in (_flow_consec(flow), _volume_ratio(r), _rsi_note(r)) if x]
+        for note in notes:
+            candidate = f"{body} · {note}" if body else note
+            if _w(candidate) <= budget:
+                body = candidate
+        if not body:
             body = swing.get("action", "")
 
-    out = [_fit(head)]
+    out = [head]
+    if swing.get("dimensions"):
+        out.extend(_score_table(swing))
     if body:
-        # 预算只扣缩进：_fit 自己会给省略号留位置，这里再扣一次等于白丢一个字的宽度
-        out.append(_fit(indent + _brief(body, PHONE_EM - _w(indent))))
+        # 这一行是句子，按 PROSE_EM 收口：body 本来就是照预算拼的，别在最后又按结构行截一次
+        out.append(_fit(indent + _brief(body, budget), PROSE_EM))
     return out
 
 
@@ -454,25 +624,59 @@ def _section_focus(valid: list, data_date: str = "", max_items: int = 3) -> list
 
 def _section_table(valid: list) -> list:
     """
-    自选全览 —— 真正的表格：一票一行，标记 / 名称 / 涨跌 / 评分 四列竖着对得齐。
+    自选全览 —— Unicode 画线表格：信号 / 股票 / 涨跌 / 总分。
 
     按评分降序排，不分档位分组：档位本来就和评分同序（偏多 >25、偏空 <-25），
     排下来自然成组，而 emoji 列已经把档位标出来了 —— 分组标题纯属多余。
+
+    资金列用 ＊ 标出「超大单」口径（东财主力净额缺失时的新浪兜底），
+    表下给一行脚注说明 —— 两个口径混在一列里还不标，那是数据错误不是排版问题。
     """
     if not valid:
         return []
     rows = sorted(valid, key=lambda r: r.get("swing", {}).get("score", 0), reverse=True)
 
-    lines = [_section(f"自选全览 {len(rows)}只")]
-    # 表头用和数据行同一套拼法，列宽才对得上（全角空格是唯一撑得住列宽的空格）
-    lines.append(f"{PAD} 名称{PAD * 2}{PAD}涨跌{PAD * 2}评分")
+    cells = []
     for r in rows:
         sig = r.get("swing", {}).get("signal", "")
-        name = _pad_name(r.get("config", {}).get("name", ""), 4)
-        pct = _pad_left(_pct(r.get("quote", {}).get("pct_change", 0)), 7)
-        score = _pad_left(f"{r.get('swing', {}).get('score', 0):+.0f}", 3)
-        lines.append(_fit(f"{_mark(sig)} {name}{PAD}{pct}{PAD}{score}"))
-    return lines
+        flow = (r.get("swing", {}).get("flow", {}) or {})
+        cells.append({
+            "名称": f"{_mark(sig)}{_pad_name(r.get('config', {}).get('name', ''), 4)}",
+            "现价": _num(r.get("quote", {}).get("price")),
+            "涨跌": _pct(r.get("quote", {}).get("pct_change", 0)),
+            "资金": _flow_compact(flow),
+            "评分": f"{r.get('swing', {}).get('score', 0):+.0f}",
+        })
+
+    # 口径标记只在一列里混了两种口径时才逐行打 ＊：全表同一个口径的话，
+    # 每行都挂一个 ＊ 是白占 1 个字，脚注写一次就够了。
+    calibers = {_flow_is_super(r.get("swing", {}).get("flow", {}) or {})
+                for r in rows if _flow_net(r.get("swing", {}).get("flow", {}) or {})}
+    mark_per_row = len(calibers) > 1
+    if not mark_per_row:
+        for cell in cells:
+            cell["资金"] = cell["资金"].rstrip("＊")
+    # 这张表故意收窄为四列：画线表格在手机上必须完整显示，资金详情放到重点卡片。
+    box_rows = []
+    for r in rows:
+        sig = r.get("swing", {}).get("signal", "")
+        box_rows.append([
+            _mark(sig),
+            _fit(r.get("config", {}).get("name", ""), 4, tail=""),
+            _pct(r.get("quote", {}).get("pct_change", 0)),
+            f"{r.get('swing', {}).get('score', 0):+.0f}",
+        ])
+    box = _box_table(["信号", "股票", "涨跌", "总分"], box_rows, [2, 4, 7, 4],
+                     ["left", "left", "right", "right"])
+    out = [_section(f"自选全览 {len(rows)}只")]
+    out.append("总分=五项相加；正强负弱；不是涨跌幅")
+    out.extend(box)
+    out.append("资金、RSI、量比见上方重点标的详情")
+    if calibers == {True}:
+        out.append("＊资金列为超大单净额（当日无主力数据）")
+    elif mark_per_row:
+        out.append("＊超大单净额口径（当日无主力数据）")
+    return out
 
 
 def _section_dragon(yypz_results: list, pool_size: int = 22, max_items: int = 3) -> list:
@@ -482,13 +686,22 @@ def _section_dragon(yypz_results: list, pool_size: int = 22, max_items: int = 3)
 
     lines = [_section(f"老龙反抽 {len(yypz_results)}/{pool_size}只入选")]
     indent = PAD + " "
+    budget = PROSE_EM - _w(indent)
     for r in yypz_results[:max_items]:
         star = "🚀" if r.get("signal") == "strong_rebound" else "🔄"
         # r["stock"] 已经是「阳光电源(300274)」，别再拼一次代码
         lines.append(_fit(f"{star} {r.get('stock', '')} {r.get('score', 0)}分"))
         theme = (r.get("theme") or "").strip()
-        detail = "，".join(x for x in (theme, f"近20日{_pct(r.get('chg_20d'), 1)}") if x)
-        lines.append(_fit(indent + _brief(detail, PHONE_EM - _w(indent))))
+        chg = f"近20日{_pct(r.get('chg_20d'), 1)}"
+        detail = " · ".join(x for x in (theme, chg) if x)
+        reason = _dragon_reason(r)
+        # 理由本身若也是「近20日…」，和前面那截是同一件事，重复写只是占宽度
+        if reason.startswith("近20日"):
+            reason = ""
+        if reason and _w(f"{detail}{SEP}{reason}") <= budget:
+            detail = f"{detail}{SEP}{reason}"
+        # 同样是句子，按 PROSE_EM 收口（默认的 PHONE_EM 会把数字拦腰截断）
+        lines.append(_fit(indent + _brief(detail, budget), PROSE_EM))
     if len(yypz_results) > max_items:
         lines.append(f"（其余 {len(yypz_results) - max_items} 只见归档报告）")
     return lines
@@ -512,7 +725,7 @@ def _section_zhengxi(quotes: list) -> list:
     lines = [_section("郑希观点")]
     for q in quotes[:2]:
         # 摘录按标点断，不要拦腰截断：观点句断在半句上，读起来像漏字
-        lines.append(_brief(q, PHONE_EM))
+        lines.append(_brief(q, PROSE_EM))
     return lines
 
 
@@ -545,6 +758,8 @@ def build_push_body(data_date: str,
 
     # 每个元素是一个段落，段落之间空行
     paragraphs = []
+    if valid:
+        paragraphs += _section_headline(valid, signal_counts)
     paragraphs += _section_index(indices or [])
     if valid:
         paragraphs += _section_summary(valid, signal_counts)
@@ -566,7 +781,11 @@ def build_push_body(data_date: str,
 # ============================================================
 
 def widest_lines(body: str, budget: float = PHONE_EM):
-    """返回超过手机行宽的段落（供 scripts/check_push_layout.py 做体检）"""
+    """
+    返回超过 budget 的段落（供 scripts/check_push_layout.py 做体检）。
+
+    结构行按 PHONE_EM 卡；说明行按 PROSE_EM 卡 —— 想一次看全部，传 PROSE_EM。
+    """
     over = []
     for line in body.split(PARA):
         width = _w(line)

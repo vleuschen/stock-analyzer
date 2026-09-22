@@ -26,12 +26,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import push_format  # noqa: E402
 
-# 手机参数：375dp 的屏、16px 正文、左右各 16px 内边距 —— 微信卡片常见取值
-SCREEN_DP = 375
+
+def configure_console_encoding():
+    """让 Windows GBK 控制台也能输出推送里的 emoji。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
+
+# 预览参数：默认按微信 PC / 浏览器里那条推送的实际宽度画（用户的截图就是 775px 宽、16px 正文）
 FONT_PX = 16
 PADDING_DP = 16
-CONTENT_PX = SCREEN_DP - PADDING_DP * 2
-SCALE = 3                      # 预览图放大倍数，放大后数字才看得清
+PREVIEW_PX = 775               # 预览画布宽度，--width 可改
+SCALE = 2                      # 预览图放大倍数，数字才看得清
+
+# 手机安全线：结构行（表格/对齐行）必须落在这条线左边，宽了就折行散表
+# 宽度 = PHONE_EM 个汉字，在预览图里画一条浅灰竖线，一眼看出表格有没有越界
+PHONE_GUIDE_PX = int(push_format.PHONE_EM * FONT_PX)
 
 FONT_PATH = r"C:\Windows\Fonts\msyh.ttc"
 EMOJI_FONT_PATH = r"C:\Windows\Fonts\seguiemj.ttf"
@@ -197,41 +208,49 @@ def demo_body(with_strong_buy: bool = False) -> str:
 # ============================================================
 
 def check(body: str) -> int:
-    """按段落量宽度：先看排版模块自己的估算，再用真实字体实测（实测才是手机上看到的）"""
-    measurer = Measurer(FONT_PX) if os.path.exists(FONT_PATH) else None
+    """
+    按段落量两件事：估算宽度（em）和真实字体实测宽度（px）。
 
-    print(f"手机参数: {SCREEN_DP}dp 屏 · {FONT_PX}px 正文 · 可用宽度 {CONTENT_PX}px")
-    print(f"排版预算: {push_format.PHONE_EM} em\n")
+    判据用的是 em 预算，分两档（见 push_format 顶部说明）：
+      · 结构行（表格、对齐行）> PHONE_EM —— 会在手机上折行把表格打散，算失败；
+      · 说明行（理由、观点）> PHONE_EM 但在 PROSE_EM 内 —— 手机上折成两行也读得通，只提示。
+    """
+    measurer = Measurer(FONT_PX) if os.path.exists(FONT_PATH) else None
+    phone, prose = push_format.PHONE_EM, push_format.PROSE_EM
+
+    print(f"预览宽度 {PREVIEW_PX}px（微信 PC / 浏览器里的实际宽度） · 正文 {FONT_PX}px")
+    print(f"预算: 结构行 ≤ {phone:.0f} 字（手机安全线 {PHONE_GUIDE_PX}px） · 说明行 ≤ {prose:.0f} 字\n")
 
     paragraphs = body.split(push_format.PARA)
-    over, near = [], []
+    fatal, wide = [], []
     print(f"{'估算':>5} {'实测':>5}  {'':2} 段落")
-    print("-" * 72)
+    print("-" * 78)
     for line in paragraphs:
         shown = collapse(line)
         em = push_format._w(line)
         px = measurer.width(shown) if measurer else em * FONT_PX
-        if px > CONTENT_PX:
-            over.append((px, em, shown))
+        if em > prose:
+            fatal.append((em, px, shown))
             flag = "❌"
-        elif px > CONTENT_PX - 20:
-            near.append((px, shown))
+        elif em > phone:
+            wide.append((em, px, shown))
             flag = "⚠️"
         else:
             flag = "  "
         print(f"{em:>5.1f} {px:>5.0f}  {flag} {shown}")
 
-    print("-" * 72)
-    if over:
-        print(f"\n❌ {len(over)} 行会在手机上折行（折行会把表格打散）：")
-        for px, em, line in over:
-            print(f"   实测 {px:.0f}px / 可用 {CONTENT_PX}px  估算 {em:.1f}em  {line}")
+    print("-" * 78)
+    if fatal:
+        print(f"\n❌ {len(fatal)} 行超过说明行上限 {prose:.0f} 字，宽屏上也会折：")
+        for em, px, line in fatal:
+            print(f"   {em:.1f}em / {px:.0f}px  {line}")
         return 1
-    if near:
-        print(f"\n⚠️ {len(near)} 行贴着边（换台字体更宽的机器就可能折行）：")
-        for px, line in near:
-            print(f"   实测 {px:.0f}px / 可用 {CONTENT_PX}px  {line}")
-    print(f"\n✅ {len(paragraphs)} 行全部放得下，手机上不会折行")
+    if wide:
+        print(f"\n⚠️ {len(wide)} 行超过结构行上限 {phone:.0f} 字（手机上会折成两行）：")
+        for em, px, line in wide:
+            print(f"   {em:.1f}em / {px:.0f}px  {line}")
+        print("   表格/对齐行不该出现在这里；说明行折两行是允许的。")
+    print(f"\n✅ {len(paragraphs)} 行：结构行都在 {phone:.0f} 字安全线内，无一行超过 {prose:.0f} 字")
     return 0
 
 
@@ -239,8 +258,13 @@ def check(body: str) -> int:
 # 手机预览图
 # ============================================================
 
-def render(body: str, out_path: str) -> str:
-    """把正文画成 375dp 手机里的样子（超出宽度的行会像真机一样折行，一眼能看出来）"""
+def render(body: str, out_path: str, width_px: int = PREVIEW_PX) -> str:
+    """
+    把正文画成它在微信里的样子（超出画布宽度的行会像真机一样折行，一眼能看出来）。
+
+    另外画一条浅灰竖线 = PHONE_EM 个汉字的安全线：表格/对齐行的右端都该在它左边，
+    越线的行在手机上就会折行 —— 这是「宽屏好看」和「手机不散表」的验收线。
+    """
     from PIL import Image, ImageDraw
 
     if not os.path.exists(FONT_PATH):
@@ -249,7 +273,7 @@ def render(body: str, out_path: str) -> str:
     m = Measurer(FONT_PX * SCALE)
     line_h = int(FONT_PX * 1.65 * SCALE)
     pad = PADDING_DP * SCALE
-    limit = CONTENT_PX * SCALE
+    limit = (width_px - PADDING_DP * 2) * SCALE
 
     # 先按渲染规则折行，算出总高
     rows = []
@@ -269,8 +293,13 @@ def render(body: str, out_path: str) -> str:
         rows.append(current)
 
     height = pad * 2 + line_h * len(rows)
-    img = Image.new("RGB", (width := SCREEN_DP * SCALE, height), "#ffffff")
+    img = Image.new("RGB", (width_px * SCALE, height), "#ffffff")
     draw = ImageDraw.Draw(img)
+
+    guide_x = pad + PHONE_GUIDE_PX * SCALE
+    if guide_x < width_px * SCALE - 4:
+        draw.line([(guide_x, 0), (guide_x, height)], fill="#e0e0e0", width=1)
+
     y = pad
     for row in rows:
         x = pad
@@ -286,11 +315,14 @@ def render(body: str, out_path: str) -> str:
 
 
 def main():
+    configure_console_encoding()
     parser = argparse.ArgumentParser(description="推送排版体检 + 手机预览")
     parser.add_argument("path", nargs="?", help="已有的推送正文文件（不传则用内置样例）")
     parser.add_argument("--strong-buy", action="store_true",
                         help="样例里造一只「强烈买入」，检查买点那几行排版")
-    parser.add_argument("--png", metavar="OUT", help="导出手机预览图")
+    parser.add_argument("--png", metavar="OUT", help="导出预览图")
+    parser.add_argument("--width", type=int, default=PREVIEW_PX,
+                        help=f"预览画布宽度（默认 {PREVIEW_PX}px = 微信 PC 里的实际宽度）")
     parser.add_argument("--body-only", action="store_true", help="只打印正文")
     args = parser.parse_args()
 
@@ -307,8 +339,8 @@ def main():
     code = check(body)
 
     if args.png:
-        out = render(body, args.png)
-        print(f"🖼️ 手机预览图: {out}")
+        out = render(body, args.png, width_px=args.width)
+        print(f"🖼️ 预览图: {out}")
     return code
 
 

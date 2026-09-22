@@ -148,6 +148,21 @@ def pick_data_date(stock_results: list, fallback: str) -> str:
 PUSH_STATE = os.path.join("reports", ".last_push_date")
 
 
+def push_requires_sendkey(trigger: str) -> bool:
+    """CI 的真实推送入口没有密钥时必须失败，避免绿灯但手机无消息。"""
+    return trigger in ("schedule", "workflow_dispatch")
+
+
+def should_skip_duplicate(data_date: str, sent_before: str, trigger: str) -> bool:
+    """
+    只对真实 CI 推送入口做按行情日期去重。
+
+    代码 push 是排版/回归运行，即使环境误传了非 dry-run，也不能消耗定时推送
+    的资格；否则下一次 schedule 会把同一行情日期误判成“已经推过”。
+    """
+    return trigger in ("schedule", "workflow_dispatch") and bool(data_date) and data_date == sent_before
+
+
 def last_pushed_date() -> str:
     try:
         with open(PUSH_STATE, encoding="utf-8") as f:
@@ -328,10 +343,15 @@ def main():
             print("-" * 60)
         else:
             sendkey = os.getenv("SERVERCHAN_SENDKEY", "")
+            trigger = os.getenv("PUSH_TRIGGER", "local").strip().lower()
             sent_before = last_pushed_date()
             if not sendkey:
-                print("⚠️ 未配置 SERVERCHAN_SENDKEY，跳过发送（正文已存档）")
-            elif sent_before == data_date:
+                message = "❌ 未配置 SERVERCHAN_SENDKEY，真实推送无法完成"
+                print(message)
+                if push_requires_sendkey(trigger):
+                    sys.exit(1)
+                print("   本地运行已跳过发送（正文已存档）")
+            elif should_skip_duplicate(data_date, sent_before, trigger):
                 # 6 点跑的是「上一个交易日」的收盘：周一和周六早上取到的都是周五的数据，
                 # 法定节假日更是天天一样。同一个交易日重复推一遍纯粹是打扰。
                 print(f"⏭️ {data_date} 的复盘已经推过了，跳过发送（正文已归档）")
@@ -339,7 +359,10 @@ def main():
                 from notifier import push_serverchan
                 result = push_serverchan(sendkey, title, body)
                 if result.get("code") == 0:
-                    mark_pushed(data_date)
+                    # 代码 push 只用于生成/验版，哪怕外部误把 dry-run 关掉，
+                    # 也不能污染定时任务的去重状态。
+                    if trigger != "push":
+                        mark_pushed(data_date)
                     print("✅ 推送成功！")
                 else:
                     print(f"❌ 推送失败: {result}")
